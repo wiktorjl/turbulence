@@ -1,0 +1,209 @@
+Metadata-Version: 2.4
+Name: turbulence
+Version: 0.1.0
+Summary: Financial market turbulence detection system
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: yfinance
+Requires-Dist: hmmlearn
+Requires-Dist: statsmodels
+Requires-Dist: arch
+Requires-Dist: scikit-learn
+Requires-Dist: fredapi
+Requires-Dist: click
+Requires-Dist: psycopg2-binary
+Requires-Dist: python-dotenv
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: flake8; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+
+# Building a market turbulence model in Python
+
+**A volatility regime detection system can be built incrementally in Python using freely available data and open-source libraries, progressing from simple VIX thresholds to Mahalanobis-distance turbulence indices in three tiers.** The payoff is substantial: research consistently shows that regime-aware position sizing and strategy selection outperform static approaches, particularly for ES futures and options traders who need to calibrate stop widths, position size, and strategy choice to current market conditions. The key architectural insight is that no single indicator captures "turbulence" — you need a composite system where fast signals (VIX level, realized vol) provide tactical framing while slower statistical models (HMM, turbulence index) provide strategic context. What follows is a complete implementation blueprint, from quick-win indicators you can run today to advanced multi-factor models worth building over weeks.
+
+## Tier 1 delivers working regime signals in an afternoon
+
+Start here. These indicators require only `numpy`, `pandas`, and `yfinance`, and produce surprisingly useful regime classifications with zero model risk.
+
+**VIX-based regime classification** is the fastest path to actionable output. The widely-used practitioner thresholds are: **VIX < 15** (low/complacent), **15–20** (normal), **20–25** (elevated), **25–30** (high), and **> 30** (extreme/panic). The "Rule of 16" provides intuitive translation: VIX divided by 16 approximates expected daily S&P 500 percentage move, so VIX at 32 implies ~2% daily swings. Pull VIX data with `yf.download("^VIX")` or from FRED using `fredapi` with series ID `VIXCLS`.
+
+Add the **VIX term structure** as a quality filter. Compute the ratio of VIX to VIX3M (3-month VIX, ticker `^VIX3M`). When this ratio exceeds 1.0 (backwardation), short-term fear exceeds long-term — a stress signal. Normal contango (ratio < 1.0) confirms calm conditions. This single ratio eliminates many false signals from VIX spikes that lack structural support.
+
+**Garman-Klass volatility** is the best OHLC-based volatility estimator for an ES trader because it uses all four price points and is roughly 8x more efficient than close-to-close volatility under geometric Brownian motion. The formula is:
+
+σ²_GK = 0.5 × ln(H/L)² − (2·ln2 − 1) × ln(C/O)²
+
+Compute this on a rolling 30-day window, annualize by multiplying by √252, then rank as a percentile over a 252-day lookback. The percentile rank is your regime signal. Related estimators worth implementing include **Parkinson** (high-low only), **Rogers-Satchell** (incorporates drift), and **Yang-Zhang** (handles overnight gaps — important for ES). The `volest` module in `jasonstrimpel/volatility-trading` on GitHub implements all of these based on Euan Sinclair's *Volatility Trading*.
+
+**Simple percentile-based regime classification** ties these together. Compute any volatility measure, rank it as a rolling percentile, and classify: bottom quartile = low vol, interquartile range = normal, top quartile = high vol. This adapts automatically to structural changes in volatility (the 2012–2019 low-vol environment was structurally different from 2020–2023).
+
+```python
+import numpy as np, pandas as pd, yfinance as yf
+
+data = yf.download("SPY", start="2010-01-01")
+log_hl = np.log(data["High"] / data["Low"])
+log_co = np.log(data["Close"] / data["Open"])
+gk_var = 0.5 * log_hl**2 - (2 * np.log(2) - 1) * log_co**2
+gk_vol = (gk_var.rolling(30).mean() * 252) ** 0.5
+vol_pctile = gk_vol.rolling(252).apply(lambda x: x.rank(pct=True).iloc[-1])
+regime = pd.cut(vol_pctile, bins=[0, 0.25, 0.75, 1.0], labels=["low", "normal", "high"])
+```
+
+## Tier 2 adds statistical regime models with real probabilistic power
+
+Three complementary approaches here, each requiring one additional library. **Hidden Markov Models** via `hmmlearn` are the most popular choice for financial regime detection.
+
+**HMM setup with hmmlearn** uses `GaussianHMM` with a scikit-learn-compatible API. Feed it two features — daily log returns and daily range (high minus low) — and fit 2–3 hidden states. Two states cleanly separate low-vol and high-vol regimes; three states add a "transition" or "moderate stress" regime that many practitioners find useful. Select the number of states by comparing BIC across models with 2–5 components.
+
+```python
+from hmmlearn.hmm import GaussianHMM
+returns = np.log(data.Close / data.Close.shift(1)).dropna()
+range_ = (data.High - data.Low).loc[returns.index]
+features = np.column_stack([returns, range_])
+
+model = GaussianHMM(n_components=3, covariance_type="full", n_iter=500, random_state=42)
+model.fit(features)
+states = model.predict(features)
+```
+
+Critical implementation details: **states are unordered** — after fitting, sort by `model.covars_` to label which state is "low vol" vs "high vol." For real-time use, extract **filtered probabilities** (forward algorithm only) rather than Viterbi-decoded states, since Viterbi uses future data. Size positions proportionally to regime probability rather than using hard regime labels — e.g., 70% probability of high-vol regime means reduce exposure by 70% of your maximum reduction.
+
+**Hamilton-style Markov regime-switching** via `statsmodels` provides a more formally grounded alternative. The `MarkovRegression` class with `switching_variance=True` directly models variance regimes:
+
+```python
+import statsmodels.api as sm
+mod = sm.tsa.MarkovRegression(returns, k_regimes=2, trend='c', switching_variance=True)
+res = mod.fit()
+regime_probs = res.smoothed_marginal_probabilities
+```
+
+The `MarkovAutoregression` class with `order=4` replicates Hamilton's (1989) original specification. Transition probabilities from the fitted model tell you regime persistence — typically **p(stay in calm) ≈ 0.97** and **p(stay in turbulent) ≈ 0.90**, meaning calm regimes last ~33 days on average and turbulent regimes ~10 days.
+
+**GARCH conditional volatility** via the `arch` library (by Kevin Sheppard, ~1,500 GitHub stars) provides a third angle. Fit a **GJR-GARCH(1,1)** with Student's t distribution — this captures the leverage effect (negative shocks amplify volatility more than positive ones) and fat tails. Extract `conditional_volatility` and percentile-rank it for regime classification.
+
+```python
+from arch import arch_model
+am = arch_model(returns * 100, p=1, o=1, q=1, dist='t')  # GJR-GARCH, Student-t
+res = am.fit(disp='off')
+cond_vol = res.conditional_volatility
+```
+
+Use BIC (`res.bic`) to compare GARCH, GJR-GARCH, and EGARCH. GJR-GARCH with Student's t (typically ~7–8 degrees of freedom for equity returns) usually wins for equity index data. **EGARCH** (`vol='EGARCH'`) is an alternative that models log-volatility and doesn't require positivity constraints.
+
+## Tier 3 captures multi-asset turbulence and systemic fragility
+
+This tier moves beyond single-asset volatility to detect when the *structure* of market relationships is breaking down — the most valuable signal for crisis detection.
+
+**The Kritzman & Li turbulence index** is the centerpiece. It computes the squared Mahalanobis distance of today's cross-asset return vector from its historical distribution:
+
+**d_t = (r_t − μ)ᵀ · Σ⁻¹ · (r_t − μ) / n**
+
+where r_t is the vector of n asset returns, μ is the rolling mean, Σ is the rolling covariance matrix, and n normalizes so the expected value under normality is approximately 1. The inverse covariance matrix is what gives this power: it detects when historically uncorrelated assets suddenly move together (correlation breakdown) or when correlated assets decouple. **VIX alone cannot capture correlation surprises** — the turbulence index can.
+
+For an ES-focused implementation, use daily returns from: **SPY** (equities), **TLT** (long bonds), **GLD** (gold), **UUP** (dollar index), **HYG** (high-yield credit), and **VIX** level changes. Compute μ and Σ on a **rolling 252-day window** to avoid look-ahead bias. Threshold using the chi-squared distribution with n degrees of freedom (e.g., 90th percentile) or simply percentile-rank the turbulence series itself.
+
+```python
+import numpy as np, numpy.linalg as la, pandas as pd, yfinance as yf
+
+tickers = ['SPY','TLT','GLD','UUP','HYG']
+prices = yf.download(tickers, start='2005-01-01')['Close']
+rets = prices.pct_change().dropna()
+
+lookback = 252
+turbulence = pd.Series(index=rets.index[lookback:], dtype=float)
+for t in range(lookback, len(rets)):
+    window = rets.iloc[t-lookback:t]
+    mu = window.mean().values
+    sigma_inv = la.inv(window.cov().values)
+    diff = rets.iloc[t].values - mu
+    turbulence.iloc[t - lookback] = diff @ sigma_inv @ diff / len(mu)
+```
+
+**The absorption ratio** measures systemic fragility via PCA. Compute the fraction of total asset variance explained by the top 1/5th of principal components over a rolling 500-day window. **High absorption ratio means markets are tightly coupled** — a single shock propagates everywhere. Kritzman et al. (2011) showed that major crashes were preceded by 1-sigma spikes in absorption ratio. Think of it as measuring whether your house is built of straw (high AR, fragile) versus brick (low AR, resilient), while the turbulence index measures how hard the wolf is currently blowing.
+
+```python
+from sklearn.decomposition import PCA
+n_components = max(1, len(tickers) // 5)
+absorption = []
+for t in range(500, len(rets)):
+    window = rets.iloc[t-500:t]
+    pca = PCA().fit(window)
+    ar = pca.explained_variance_[:n_components].sum() / pca.explained_variance_.sum()
+    absorption.append(ar)
+```
+
+The `frds` library (`pip install frds`) provides a clean API: `from frds.measures import AbsorptionRatio`.
+
+**Gaussian Mixture Models** via `sklearn.mixture.GaussianMixture` offer a machine-learning alternative to HMM. Feed multi-dimensional features (returns, rolling vol, range, VIX level) and let the model discover cluster structure. GMM provides soft probabilistic assignments and handles elliptical clusters. Use BIC to select 3–4 components. Two Sigma research identified four regimes via similar clustering: Crisis, Recovery, Steady State, and "Walking on Ice."
+
+## Combining indicators into a composite turbulence score
+
+No single indicator is sufficient. A practical composite score for ES/SPY trading combines five components, each normalized to a 0–1 scale via historical percentile ranking:
+
+- **VIX percentile** (1-year rolling) — captures market-implied fear, weight 25%
+- **VIX term structure ratio** (VIX/VIX3M) — captures urgency of fear, weight 15%
+- **Realized vol percentile** (Garman-Klass, 30-day window, 1-year lookback) — captures actual price action, weight 20%
+- **Turbulence index percentile** (Mahalanobis distance across 5–6 assets) — captures cross-asset stress, weight 25%
+- **GARCH conditional vol percentile** (GJR-GARCH) — captures volatility persistence and clustering, weight 15%
+
+Multiply each normalized component by its weight, sum to get a **composite score from 0 to 1**. Map to regimes: **0–0.25** (low turbulence), **0.25–0.50** (normal), **0.50–0.75** (elevated), **0.75–1.0** (extreme). The weighting scheme reflects the complementary nature of these signals — VIX and turbulence index get higher weights because they capture different dimensions (implied vol vs. cross-asset structure).
+
+## Avoiding whipsaws requires engineering discipline
+
+The single biggest practical problem with regime detection is **whipsawing** — rapidly flipping between regimes on noise. Three techniques solve this.
+
+**Hysteresis** uses different thresholds for entering and exiting a regime. Enter the high-vol regime when VIX crosses above 28, but only exit when it drops below 22. This 6-point "deadband" prevents oscillation around a single threshold. Apply the same principle to your composite score — require the score to cross 0.75 to enter extreme regime, but stay there until it drops below 0.60.
+
+**Persistence filters** require a regime classification to hold for N consecutive days (typically 3–5) before acting. This eliminates single-day spikes. A complementary approach from practitioner research: combine VIX > 30 with RSI < 40 to identify true capitulation zones rather than isolated VIX spikes.
+
+**Probabilistic sizing** eliminates the need for hard regime boundaries entirely. Instead of declaring "we are now in high-vol regime," use the HMM's filtered probability directly: if P(high-vol) = 0.65, reduce position size by 65% of your maximum reduction. This produces smooth transitions that naturally dampen whipsaws.
+
+## How regimes should change your ES and options trading
+
+For an **ES futures trader using support/resistance and order flow**, regime detection should adjust three things. First, **position sizing**: when the composite turbulence score is elevated (> 0.50), cut risk per trade by 25–50%. When extreme (> 0.75), trade A-setups only at half size or stand aside. Second, **stop widths and S/R zones**: in low-vol regimes, tighten S/R zones and use standard ATR-based stops. In high-vol regimes, widen S/R zones by 1.5× ATR and expect overshoot through levels — require volume confirmation before trusting a level. Third, **strategy selection**: S/R bounce trading excels in quiet regimes; in volatile regimes, switch to momentum/breakout approaches with wider targets, or reduce to only trading the most significant weekly/monthly pivots.
+
+For **options**, regimes directly inform whether to be a net buyer or seller of volatility. In low-vol regimes, buy cheap long-dated OTM puts as insurance and consider debit spreads. In high-vol regimes, sell premium via credit spreads and jade lizards — **90% of VIX spikes above 30 resolve within 3 months**. In extreme regimes, avoid naked short premium entirely; use protective puts or defined-risk spreads.
+
+## Backtesting regime models without fooling yourself
+
+**Look-ahead bias is the dominant risk** in regime model backtesting. Three specific traps to avoid: using Viterbi-decoded HMM states (which optimize over the entire path including future data), computing rolling statistics over the full dataset, and optimizing regime thresholds on in-sample data. Use **filtered probabilities** (forward-only HMM algorithm) for any strategy that will run in real-time. Use strictly **rolling windows** for all statistics — never full-sample means or covariance matrices.
+
+Walk-forward validation is essential. Train on a 3–4 year window, test on the next 6–12 months, slide forward. Accept that walk-forward optimization discovers regime shifts with a lag — this is realistic, since real-time regime detection inherently lags by days to weeks. Retrain HMM and GARCH models monthly or quarterly on expanding windows. Retrain VIX/ATR-based thresholds on rolling windows to adapt to structural changes.
+
+Red flags in backtest results (per Michael Harris): annualized returns > 12%, Sharpe > 1.5, or suspiciously smooth equity curves should trigger skepticism.
+
+## Essential GitHub repositories for building this system
+
+The most valuable repositories for implementation, organized by tier:
+
+| Repository | Stars | What it provides |
+|---|---|---|
+| `bashtage/arch` | ~1,500 | GARCH, EGARCH, GJR-GARCH — the definitive Python volatility library |
+| `hmmlearn/hmmlearn` | ~3,300 | GaussianHMM with scikit-learn API — the standard HMM library |
+| `AI4Finance-Foundation/FinRL` | ~10,000 | Built-in Kritzman turbulence index (`add_turbulence()`) integrated into a trading framework |
+| `hudson-and-thames/mlfinlab` | ~4,400 | Financial ML toolkit including meta-labeling, structural breaks, and regime identification |
+| `tianyu-z/Kritzman-Regime-Detection` | Small | Direct implementation of Kritzman's turbulence + HMM regime detection combined |
+| `tzhangwps/Turbulence-and-Systemic-Risk` | 26 | Clean, focused Mahalanobis turbulence index with visualization |
+| `randlow/DM` | Small | All three Kritzman measures — turbulence, correlation surprise, and absorption ratio |
+| `mgao6767/frds` | ~54 | Pip-installable absorption ratio + GARCH implementations for academic finance |
+| `LSEG-API-Samples` (market regime detection) | 47 | Multi-method regime detection from London Stock Exchange Group — statistical and ML approaches |
+| `AmpyFin/Euler` | 4 | Purpose-built regime detection system with 10 weighting strategies and 4-regime classification |
+
+For the Hamilton regime-switching model, `statsmodels` (already in most Python environments) includes `MarkovRegression` and `MarkovAutoregression` classes that directly replicate the 1989 specification.
+
+## Data stack costs nothing to start
+
+The entire Tier 1–3 system can be built on **free data**. Use `yfinance` for cross-asset daily returns (SPY, TLT, GLD, UUP, HYG, EFA, EEM, VNQ), VIX (`^VIX`), VIX3M (`^VIX3M`), and basic ES futures (`ES=F`). Use `fredapi` with a free API key for credit spreads (`BAMLH0A0HYM2`), yield curve slope (`T10Y2Y`), and treasury rates (`DGS10`, `DGS2`). For intraday ES data, **Alpaca** provides free 1-minute bars with a paper trading account (10+ years history, 200 requests/minute). For production-quality futures tick data, **Databento** and **FirstRate Data** are the best mid-cost options. For options implied volatility, `yfinance` provides option chains with IV per contract for prototyping; **Polygon.io** ($29–79/month) or **IBKR's TWS API** provides production-grade IV data.
+
+## The academic foundation in five papers
+
+The intellectual backbone of this system rests on **Kritzman & Li (2010)**, "Skulls, Financial Turbulence, and Risk Management" in the *Financial Analysts Journal* — which established that Mahalanobis distance applied to cross-asset returns identifies crisis periods where returns are significantly lower than normal. **Hamilton (1989)** in *Econometrica* provided the regime-switching framework showing that markets exist in persistent states with abrupt transitions. **Ang & Bekaert (2002, 2004)** demonstrated that correlations increase in bear markets and that regime-switching strategies dominate static allocation out-of-sample. **Kritzman et al. (2011)** introduced the absorption ratio as a measure of systemic fragility, showing that major crashes were preceded by spikes in market coupling. Recent work includes **Akioyamen et al. (2021)**, who combined PCA-based clustering with supervised classification for regime detection, and a 2025 ensemble framework combining HMM with gradient-boosted models via voting classifiers.
+
+## Conclusion
+
+The optimal build order for an ES/options trader is deliberate: start with VIX thresholds and Garman-Klass percentiles (Tier 1, one afternoon), add GJR-GARCH conditional volatility and a 3-state HMM (Tier 2, one weekend), then build the Mahalanobis turbulence index and absorption ratio (Tier 3, one more weekend). Wire them into a composite score with hysteresis-based regime transitions. The deepest insight from this research is that **turbulence is not just high volatility — it's correlation breakdown across assets**, which is why the Mahalanobis distance outperforms VIX alone as a risk management signal. Build the Streamlit dashboard early in the process so you can watch regime signals develop intuition before trading on them. The complete Python stack — `yfinance`, `numpy`, `pandas`, `arch`, `hmmlearn`, `statsmodels`, `scikit-learn`, `fredapi` — costs nothing and runs on a laptop.
