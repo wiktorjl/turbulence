@@ -1,0 +1,2 @@
+[console_scripts]
+turbulence = turbulence.cli:main
