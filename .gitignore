@@ -1,0 +1,45 @@
+# Environment and credentials
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Generated charts (keep only final versions)
+turbulence_*.png
+!turbulence_ytd_final.png
+!turbulence_3m_final.png
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Data
+data/
+*.csv
+*.parquet
