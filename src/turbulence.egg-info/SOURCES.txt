@@ -1,5 +1,12 @@
-TURBULENCE.md
+.env.example
+.gitignore
+CLAUDE.md
+README.md
+plot_turbulence.py
 pyproject.toml
+requirements.txt
+test_database_setup.py
+test_full_data_fetch.py
 src/turbulence/__init__.py
 src/turbulence/cli.py
 src/turbulence/composite.py
