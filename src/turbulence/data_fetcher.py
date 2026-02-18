@@ -108,16 +108,20 @@ class DataFetcher:
         Args:
             ticker: Stock ticker symbol
             start_date: Start date in YYYY-MM-DD format
-            end_date: End date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format (inclusive)
 
         Returns:
             DataFrame with OHLCV data, or None if fetch fails
         """
         try:
+            # yfinance uses exclusive end date, so add 1 day to include end_date
+            end_date_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            end_date_exclusive = (end_date_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+
             df = yf.download(
                 ticker,
                 start=start_date,
-                end=end_date,
+                end=end_date_exclusive,
                 progress=False,
                 auto_adjust=True
             )
