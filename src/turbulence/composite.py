@@ -2,7 +2,7 @@
 Composite Scoring System for Market Regime Detection
 
 This module combines five normalized volatility components into a composite
-turbulence score with hysteresis and persistence filters to identify market regimes.
+turbulence score with simple fixed thresholds and persistence filter.
 
 Components:
 1. VIX percentile (25%)
@@ -11,11 +11,14 @@ Components:
 4. Turbulence index percentile (25%)
 5. GARCH conditional volatility percentile (15%)
 
-Regimes:
+Regimes (fixed thresholds):
 - Low: 0.00-0.25
 - Normal: 0.25-0.50
 - Elevated: 0.50-0.75
 - Extreme: 0.75-1.00
+
+Whipsaw prevention: 3-day persistence filter requires regime to hold
+for 3 consecutive days before confirming transition.
 """
 
 import numpy as np
@@ -45,13 +48,11 @@ DEFAULT_WEIGHTS = {
     'garch_vol_percentile': 0.15
 }
 
-
-# Hysteresis thresholds: (entry_threshold, exit_threshold)
-DEFAULT_HYSTERESIS = {
-    Regime.LOW: (0.0, 0.30),        # Enter at 0, exit at 0.30
-    Regime.NORMAL: (0.25, 0.20),     # Enter at 0.25, exit at 0.20
-    Regime.ELEVATED: (0.50, 0.45),   # Enter at 0.50, exit at 0.45
-    Regime.EXTREME: (0.75, 0.60)     # Enter at 0.75, exit at 0.60
+# Simple fixed regime thresholds (no hysteresis)
+REGIME_THRESHOLDS = {
+    'low_to_normal': 0.25,
+    'normal_to_elevated': 0.50,
+    'elevated_to_extreme': 0.75
 }
 
 
@@ -236,98 +237,52 @@ def apply_persistence_filter(
     return filtered
 
 
-def classify_regime_with_hysteresis(
-    composite_score: pd.Series,
-    hysteresis_thresholds: Optional[Dict[Regime, Tuple[float, float]]] = None
+def classify_regime_simple(
+    composite_score: pd.Series
 ) -> pd.Series:
     """
-    Classify composite score into regimes with hysteresis.
+    Classify composite score into regimes using simple fixed thresholds.
 
-    Hysteresis prevents rapid switching by using different thresholds
-    for entering vs. exiting each regime.
+    Uses clear, non-path-dependent thresholds:
+    - Low: 0.00 - 0.25
+    - Normal: 0.25 - 0.50
+    - Elevated: 0.50 - 0.75
+    - Extreme: 0.75 - 1.00
+
+    Whipsaw prevention is handled by the persistence filter (applied separately).
 
     Parameters
     ----------
     composite_score : pd.Series
         Composite turbulence score [0, 1]
-    hysteresis_thresholds : dict, optional
-        Hysteresis thresholds for each regime: {Regime: (entry, exit)}
-        Uses defaults if None.
 
     Returns
     -------
     pd.Series
         Regime classifications (before persistence filter)
     """
-    if hysteresis_thresholds is None:
-        hysteresis_thresholds = DEFAULT_HYSTERESIS
-
     if len(composite_score) == 0:
         return pd.Series(dtype=object)
 
     regime_series = pd.Series(index=composite_score.index, dtype=object)
 
-    # Initialize with first valid regime
-    first_valid_idx = composite_score.first_valid_index()
-    if first_valid_idx is None:
-        return regime_series
-
-    first_score = composite_score.loc[first_valid_idx]
-
-    # Determine initial regime based on score
-    if first_score < 0.25:
-        current_regime = Regime.LOW
-    elif first_score < 0.50:
-        current_regime = Regime.NORMAL
-    elif first_score < 0.75:
-        current_regime = Regime.ELEVATED
-    else:
-        current_regime = Regime.EXTREME
-
-    regime_series.loc[first_valid_idx] = current_regime.value
-
-    # Apply hysteresis for subsequent values
-    for idx in composite_score.index[composite_score.index.get_loc(first_valid_idx) + 1:]:
+    # Classify each score independently using fixed thresholds
+    for idx in composite_score.index:
         score = composite_score.loc[idx]
 
         if pd.isna(score):
-            regime_series.loc[idx] = current_regime.value
+            regime_series.loc[idx] = None
             continue
 
-        # Check for regime transitions with hysteresis
-        if current_regime == Regime.LOW:
-            # Can only move to NORMAL
-            entry_threshold = hysteresis_thresholds[Regime.NORMAL][0]
-            if score >= entry_threshold:
-                current_regime = Regime.NORMAL
-
-        elif current_regime == Regime.NORMAL:
-            # Can move to LOW or ELEVATED
-            exit_low = hysteresis_thresholds[Regime.NORMAL][1]
-            entry_elevated = hysteresis_thresholds[Regime.ELEVATED][0]
-
-            if score < exit_low:
-                current_regime = Regime.LOW
-            elif score >= entry_elevated:
-                current_regime = Regime.ELEVATED
-
-        elif current_regime == Regime.ELEVATED:
-            # Can move to NORMAL or EXTREME
-            exit_normal = hysteresis_thresholds[Regime.ELEVATED][1]
-            entry_extreme = hysteresis_thresholds[Regime.EXTREME][0]
-
-            if score < exit_normal:
-                current_regime = Regime.NORMAL
-            elif score >= entry_extreme:
-                current_regime = Regime.EXTREME
-
-        elif current_regime == Regime.EXTREME:
-            # Can only move to ELEVATED
-            exit_threshold = hysteresis_thresholds[Regime.EXTREME][1]
-            if score < exit_threshold:
-                current_regime = Regime.ELEVATED
-
-        regime_series.loc[idx] = current_regime.value
+        # Simple threshold classification
+        if score < 0.25:
+            regime_series.loc[idx] = Regime.LOW.value
+        elif score < 0.50:
+            regime_series.loc[idx] = Regime.NORMAL.value
+        elif score < 0.75:
+            regime_series.loc[idx] = Regime.ELEVATED.value
+        else:
+            regime_series.loc[idx] = Regime.EXTREME.value
 
     return regime_series
 
@@ -337,13 +292,13 @@ class CompositeScorer:
     Composite scoring system for market regime detection.
 
     Combines multiple normalized volatility components with configurable
-    weights, hysteresis, and persistence filtering.
+    weights and persistence filtering. Uses simple fixed thresholds
+    (0.25, 0.50, 0.75) with 3-day persistence filter to prevent whipsaw.
     """
 
     def __init__(
         self,
         weights: Optional[Dict[str, float]] = None,
-        hysteresis_thresholds: Optional[Dict[Regime, Tuple[float, float]]] = None,
         min_consecutive_days: int = 3,
         percentile_window: int = 252
     ):
@@ -354,18 +309,12 @@ class CompositeScorer:
         ----------
         weights : dict, optional
             Component weights. Uses defaults if None.
-        hysteresis_thresholds : dict, optional
-            Regime hysteresis thresholds. Uses defaults if None.
         min_consecutive_days : int, default 3
             Minimum consecutive days for regime persistence filter
         percentile_window : int, default 252
             Window for percentile rank calculations (252 = 1 year)
         """
         self.weights = weights if weights is not None else DEFAULT_WEIGHTS
-        self.hysteresis_thresholds = (
-            hysteresis_thresholds if hysteresis_thresholds is not None
-            else DEFAULT_HYSTERESIS
-        )
         self.min_consecutive_days = min_consecutive_days
         self.percentile_window = percentile_window
 
@@ -446,12 +395,10 @@ class CompositeScorer:
             f"{composite_score.max():.3f}]"
         )
 
-        # Step 5: Classify regimes with hysteresis
-        regime_raw = classify_regime_with_hysteresis(
-            composite_score, self.hysteresis_thresholds
-        )
+        # Step 5: Classify regimes using simple thresholds
+        regime_raw = classify_regime_simple(composite_score)
 
-        # Step 6: Apply persistence filter
+        # Step 6: Apply persistence filter (prevents whipsaw)
         regime_final = apply_persistence_filter(
             regime_raw, self.min_consecutive_days
         )

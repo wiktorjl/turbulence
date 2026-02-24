@@ -57,7 +57,7 @@ The package uses a `src` layout with setuptools. Entry point: `turbulence.cli:ma
 - **`tier1.py`** — VIX regime classification (5 levels), VIX/VIX3M term structure ratio, Garman-Klass volatility (30-day rolling window, annualized), percentile-based classification (252-day rolling window).
 - **`tier2.py`** — Gaussian HMM (hmmlearn), GJR-GARCH(1,1) (arch library, scales returns to % for numerical stability), Hamilton regime-switching (statsmodels MarkovRegression). All have rolling-window variants.
 - **`tier3.py`** — `KritzmanLiTurbulence` (Mahalanobis distance with Ledoit-Wolf shrinkage), `AbsorptionRatio` (PCA on 500-day window), `RegimeClustering` (GMM with 5 rolling features).
-- **`composite.py`** — `CompositeScorer` combines 5 normalized components with configurable weights, applies hysteresis thresholds for regime transitions, and 3-day persistence filter to prevent whipsaw.
+- **`composite.py`** — `CompositeScorer` combines 5 normalized components with configurable weights using simple fixed thresholds (0.25, 0.50, 0.75) and 3-day persistence filter to prevent whipsaw.
 - **`utils.py`** — Custom exceptions (`DatabaseConnectionError`, `APIRateLimitError`, `MissingDataError`, `NumericalInstabilityError`), retry/rate-limit decorators, covariance matrix regularization.
 
 ### Unimplemented Features
@@ -82,9 +82,9 @@ Optional: `LOG_LEVEL`, `DB_POOL_MIN`, `DB_POOL_MAX`, `API_RATE_LIMIT_DELAY`, `AP
 - **Rolling windows**: 252 days for annual stats, 30 days for short-term vol, 500 days for absorption ratio
 
 ### Whipsaw Prevention
-- **Hysteresis**: Different thresholds for entering vs exiting regimes (defined in `composite.py` `DEFAULT_HYSTERESIS`)
-- **Persistence filters**: Require regime to hold for 3+ consecutive days before confirming transition
-- **Probabilistic sizing**: Use HMM filtered probabilities directly rather than hard regime labels
+- **Simple thresholds**: Fixed regime boundaries at 0.25, 0.50, 0.75 (defined in `composite.py` `REGIME_THRESHOLDS`)
+- **Persistence filter**: Requires regime to hold for 3 consecutive days before confirming transition
+- **Probabilistic sizing**: For trading, prefer using HMM filtered probabilities directly rather than hard regime labels
 
 ### Model Selection
 - Compare models using BIC
