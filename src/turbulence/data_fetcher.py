@@ -265,9 +265,11 @@ class DataFetcher:
         df: pd.DataFrame
     ) -> Tuple[int, int]:
         """
-        Store price data in existing stock_prices table.
+        Store price data in existing stock_prices table using batch upsert.
 
         Handles foreign key constraint by ensuring tickers exist in companies table first.
+        Uses PostgreSQL's ON CONFLICT for efficient batch upserts.
+        Processes in reverse date order (newest first) for better user experience.
 
         Args:
             conn: PostgreSQL connection
@@ -279,55 +281,64 @@ class DataFetcher:
         if df.empty:
             return 0, 0
 
+        print(f"Storing {len(df)} records to database...")
+
         # Ensure all tickers exist in companies table (for foreign key constraint)
         unique_tickers = df['ticker'].unique()
         for ticker in unique_tickers:
             self._ensure_ticker_in_companies(conn, ticker)
 
-        inserted = 0
-        updated = 0
+        # Sort by date descending (newest first) so latest data is stored first
+        df = df.sort_values('date', ascending=False).reset_index(drop=True)
 
+        # Prepare batch data
+        print("Preparing batch insert...")
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['ticker'],
+                row['date'],
+                float(row['open']),
+                float(row['high']),
+                float(row['low']),
+                float(row['close']),
+                int(row['volume']) if pd.notna(row['volume']) else None
+            ))
+
+        # Batch upsert using ON CONFLICT
+        print(f"Upserting {len(records)} records in batches of 1000...")
         with conn.cursor() as cur:
-            for _, row in df.iterrows():
-                # Check if record exists
-                cur.execute("""
-                    SELECT COUNT(*) FROM stock_prices
-                    WHERE ticker = %s AND date = %s
-                """, (row['ticker'], row['date']))
+            # Use execute_batch for better performance
+            from psycopg2.extras import execute_batch
 
-                exists = cur.fetchone()[0] > 0
+            # Process in batches and show progress
+            batch_size = 1000
+            total_batches = (len(records) + batch_size - 1) // batch_size
 
-                if exists:
-                    cur.execute("""
-                        UPDATE stock_prices
-                        SET open = %s, high = %s, low = %s, close = %s, volume = %s
-                        WHERE ticker = %s AND date = %s
-                    """, (
-                        float(row['open']),
-                        float(row['high']),
-                        float(row['low']),
-                        float(row['close']),
-                        int(row['volume']) if pd.notna(row['volume']) else None,
-                        row['ticker'],
-                        row['date']
-                    ))
-                    updated += 1
-                else:
-                    cur.execute("""
-                        INSERT INTO stock_prices (ticker, date, open, high, low, close, volume)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        row['ticker'],
-                        row['date'],
-                        float(row['open']),
-                        float(row['high']),
-                        float(row['low']),
-                        float(row['close']),
-                        int(row['volume']) if pd.notna(row['volume']) else None
-                    ))
-                    inserted += 1
+            for i in range(0, len(records), batch_size):
+                batch = records[i:i + batch_size]
+                batch_num = i // batch_size + 1
 
-        return inserted, updated
+                execute_batch(cur, """
+                    INSERT INTO stock_prices (ticker, date, open, high, low, close, volume)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (ticker, date) DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume
+                """, batch, page_size=batch_size)
+
+                print(f"  Batch {batch_num}/{total_batches} complete ({len(batch)} records)")
+
+            # Commit the transaction
+            print("Committing transaction...")
+            conn.commit()
+            print("Done!")
+
+        # For simplicity, return total count as inserted (actual split not tracked with ON CONFLICT)
+        return len(df), 0
 
     def fetch_and_store(
         self,
