@@ -406,10 +406,14 @@ def calculate_tier3_indicators(
     returns: pd.DataFrame,
     turbulence_window: int = 252,
     absorption_window: int = 500,
-    n_regimes: int = 3
+    n_regimes: int = 3,
+    clustering_train_window: int = 756
 ) -> Dict[str, pd.Series]:
     """
     Calculate all Tier 3 indicators for multi-asset returns.
+
+    Uses expanding window for regime clustering to avoid look-ahead bias.
+    Each date's prediction uses only data available up to that point.
 
     Parameters
     ----------
@@ -421,6 +425,8 @@ def calculate_tier3_indicators(
         Window for absorption ratio (default 500)
     n_regimes : int
         Number of regimes for GMM clustering (default 3)
+    clustering_train_window : int
+        Minimum window for initial GMM training (default 756 = 3 years)
 
     Returns
     -------
@@ -433,22 +439,49 @@ def calculate_tier3_indicators(
     """
     results = {}
 
-    # Kritzman-Li Turbulence
+    # Kritzman-Li Turbulence - Already correct (uses rolling windows)
     kl = KritzmanLiTurbulence(window=turbulence_window)
     results['turbulence'] = kl.calculate(returns)
 
-    # Absorption Ratio
+    # Absorption Ratio - Already correct (uses rolling windows)
     ar = AbsorptionRatio(window=absorption_window)
     results['absorption_ratio'] = ar.calculate(returns)
 
-    # Regime Clustering
-    # Use first 80% for training, predict on all data
-    train_size = int(len(returns) * 0.8)
-    train_data = returns.iloc[:train_size]
+    # Regime Clustering - FIX: Use expanding window to avoid look-ahead bias
+    regimes = pd.Series(index=returns.index, dtype=float)
+    regime_probs = pd.DataFrame(
+        index=returns.index,
+        columns=[f'regime_{i}' for i in range(n_regimes)],
+        dtype=float
+    )
 
-    rc = RegimeClustering(n_regimes=n_regimes)
-    rc.fit(train_data)
-    regimes, regime_probs = rc.predict(returns)
+    # For each date, train on expanding window of data available up to that date
+    for i in range(len(returns)):
+        if i < clustering_train_window:
+            # Not enough data for initial training
+            regimes.iloc[i] = np.nan
+            regime_probs.iloc[i] = np.nan
+            continue
+
+        # Use expanding window: train on all data UP TO AND INCLUDING current point
+        # This is point-in-time correct - we use only data available at time i
+        train_data = returns.iloc[:i+1]
+
+        try:
+            rc = RegimeClustering(n_regimes=n_regimes)
+            rc.fit(train_data)
+
+            # Predict on full training data to compute features correctly,
+            # then extract only the last (current) prediction
+            regime, probs = rc.predict(train_data)
+
+            regimes.iloc[i] = regime.iloc[-1]
+            regime_probs.iloc[i] = probs.iloc[-1]
+        except Exception as e:
+            # On failure, leave as NaN
+            warnings.warn(f"Regime clustering failed at index {i}: {str(e)}")
+            regimes.iloc[i] = np.nan
+            regime_probs.iloc[i] = np.nan
 
     results['regime'] = regimes
     results['regime_probs'] = regime_probs
