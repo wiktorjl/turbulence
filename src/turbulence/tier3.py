@@ -407,7 +407,8 @@ def calculate_tier3_indicators(
     turbulence_window: int = 252,
     absorption_window: int = 500,
     n_regimes: int = 3,
-    clustering_train_window: int = 756
+    clustering_train_window: int = 756,
+    clustering_refit_days: int = 5
 ) -> Dict[str, pd.Series]:
     """
     Calculate all Tier 3 indicators for multi-asset returns.
@@ -427,6 +428,10 @@ def calculate_tier3_indicators(
         Number of regimes for GMM clustering (default 3)
     clustering_train_window : int
         Minimum window for initial GMM training (default 756 = 3 years)
+    clustering_refit_days : int
+        Refit GMM every N days instead of daily (default 5 for weekly).
+        Set to 1 for daily refitting (slow but most accurate).
+        Higher values are faster but less responsive to regime changes.
 
     Returns
     -------
@@ -448,12 +453,23 @@ def calculate_tier3_indicators(
     results['absorption_ratio'] = ar.calculate(returns)
 
     # Regime Clustering - FIX: Use expanding window to avoid look-ahead bias
+    # Refit every N days for performance (daily refitting is very slow)
     regimes = pd.Series(index=returns.index, dtype=float)
     regime_probs = pd.DataFrame(
         index=returns.index,
         columns=[f'regime_{i}' for i in range(n_regimes)],
         dtype=float
     )
+
+    # Calculate how many models we'll fit for progress indication
+    valid_range = max(0, len(returns) - clustering_train_window)
+    total_fits = (valid_range + clustering_refit_days - 1) // clustering_refit_days
+    print(f"\nTier 3 Regime Clustering: Refitting every {clustering_refit_days} days (~{total_fits} fits)...")
+
+    # Track the last fitted model to reuse between refits
+    last_rc = None
+    last_fit_idx = -1
+    fits_completed = 0
 
     # For each date, train on expanding window of data available up to that date
     for i in range(len(returns)):
@@ -463,25 +479,48 @@ def calculate_tier3_indicators(
             regime_probs.iloc[i] = np.nan
             continue
 
-        # Use expanding window: train on all data UP TO AND INCLUDING current point
-        # This is point-in-time correct - we use only data available at time i
-        train_data = returns.iloc[:i+1]
+        # Decide whether to refit the model
+        should_refit = (
+            last_rc is None or  # First fit
+            (i - last_fit_idx) >= clustering_refit_days  # Time to refit
+        )
 
-        try:
-            rc = RegimeClustering(n_regimes=n_regimes)
-            rc.fit(train_data)
+        if should_refit:
+            # Use expanding window: train on all data UP TO AND INCLUDING current point
+            # This is point-in-time correct - we use only data available at time i
+            train_data = returns.iloc[:i+1]
 
-            # Predict on full training data to compute features correctly,
-            # then extract only the last (current) prediction
-            regime, probs = rc.predict(train_data)
+            try:
+                last_rc = RegimeClustering(n_regimes=n_regimes)
+                last_rc.fit(train_data)
+                last_fit_idx = i
+                fits_completed += 1
 
-            regimes.iloc[i] = regime.iloc[-1]
-            regime_probs.iloc[i] = probs.iloc[-1]
-        except Exception as e:
-            # On failure, leave as NaN
-            warnings.warn(f"Regime clustering failed at index {i}: {str(e)}")
-            regimes.iloc[i] = np.nan
-            regime_probs.iloc[i] = np.nan
+                # Show progress
+                if fits_completed % 10 == 0 or i == len(returns) - 1:
+                    progress_pct = (fits_completed / total_fits * 100) if total_fits > 0 else 0
+                    print(f"  Progress: {fits_completed}/{total_fits} fits ({progress_pct:.1f}%) - Date: {returns.index[i].strftime('%Y-%m-%d')}")
+
+            except Exception as e:
+                warnings.warn(f"Regime clustering failed at index {i}: {str(e)}")
+                regimes.iloc[i] = np.nan
+                regime_probs.iloc[i] = np.nan
+                continue
+
+        # Predict using current model (newly fitted or previous)
+        if last_rc is not None:
+            try:
+                # Predict on data up to current point
+                predict_data = returns.iloc[:i+1]
+                regime, probs = last_rc.predict(predict_data)
+                regimes.iloc[i] = regime.iloc[-1]
+                regime_probs.iloc[i] = probs.iloc[-1]
+            except Exception as e:
+                warnings.warn(f"Prediction failed at index {i}: {str(e)}")
+                regimes.iloc[i] = np.nan
+                regime_probs.iloc[i] = np.nan
+
+    print(f"  Completed: {fits_completed} GMM models fitted")
 
     results['regime'] = regimes
     results['regime_probs'] = regime_probs
