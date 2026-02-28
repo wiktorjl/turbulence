@@ -18,10 +18,9 @@ env/
 *.swp
 *.swo
 
-# Generated charts (keep only final versions)
+# Generated charts (keep only screenshots/ for README)
 turbulence_*.png
-!turbulence_ytd_final.png
-!turbulence_3m_final.png
+!screenshots/
 
 # Database
 *.db
