@@ -232,11 +232,13 @@ def generate_report(
         If no data found for the specified period or format is unsupported.
     """
     if format == 'pdf':
-        raise ValueError(
-            "PDF format requires the 'weasyprint' package. "
-            "Install it with: pip install weasyprint. "
-            "For now, use --format html."
-        )
+        try:
+            import weasyprint  # noqa: F401
+        except ImportError:
+            raise ValueError(
+                "PDF format requires the 'weasyprint' package. "
+                "Install it with: pip install weasyprint"
+            )
 
     logger.info(f"Generating {format.upper()} report for {start_date.date()} to {end_date.date()}")
 
@@ -422,8 +424,12 @@ def generate_report(
 
     html_content = "\n".join(html_parts)
 
-    with open(output_path, 'w') as f:
-        f.write(html_content)
+    if format == 'pdf':
+        import weasyprint
+        weasyprint.HTML(string=html_content).write_pdf(output_path)
+    else:
+        with open(output_path, 'w') as f:
+            f.write(html_content)
 
     logger.info(f"Report written to {output_path}")
     return output_path
