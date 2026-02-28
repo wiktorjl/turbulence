@@ -1,5 +1,6 @@
 """Data fetching module for market data from Polygon.io and yfinance."""
 
+import logging
 import os
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
@@ -8,6 +9,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 from psycopg2.extensions import connection
+
+logger = logging.getLogger(__name__)
 
 
 class DataFetcher:
@@ -93,7 +96,7 @@ class DataFetcher:
             return df
 
         except (requests.RequestException, KeyError, ValueError) as e:
-            print(f"Polygon.io fetch failed for {ticker}: {e}")
+            logger.warning(f"Polygon.io fetch failed for {ticker}: {e}")
             return None
 
     def _fetch_from_yfinance(
@@ -151,7 +154,7 @@ class DataFetcher:
             return df
 
         except Exception as e:
-            print(f"yfinance fetch failed for {ticker}: {e}")
+            logger.warning(f"yfinance fetch failed for {ticker}: {e}")
             return None
 
     def fetch_ticker_data(
@@ -181,16 +184,16 @@ class DataFetcher:
         if use_polygon_first:
             df = self._fetch_from_polygon(ticker, start_date, end_date)
             if df is not None:
-                print(f"Fetched {ticker} from Polygon.io: {len(df)} rows")
+                logger.info(f"Fetched {ticker} from Polygon.io: {len(df)} rows")
                 return df
 
         # Fallback to yfinance
         df = self._fetch_from_yfinance(ticker, start_date, end_date)
         if df is not None:
-            print(f"Fetched {ticker} from yfinance: {len(df)} rows")
+            logger.info(f"Fetched {ticker} from yfinance: {len(df)} rows")
             return df
 
-        print(f"Failed to fetch {ticker} from both sources")
+        logger.warning(f"Failed to fetch {ticker} from both sources")
         return None
 
     def fetch_multiple_tickers(
@@ -281,7 +284,7 @@ class DataFetcher:
         if df.empty:
             return 0, 0
 
-        print(f"Storing {len(df)} records to database...")
+        logger.info(f"Storing {len(df)} records to database...")
 
         # Ensure all tickers exist in companies table (for foreign key constraint)
         unique_tickers = df['ticker'].unique()
@@ -292,7 +295,7 @@ class DataFetcher:
         df = df.sort_values('date', ascending=False).reset_index(drop=True)
 
         # Prepare batch data
-        print("Preparing batch insert...")
+        logger.info("Preparing batch insert...")
         records = []
         for _, row in df.iterrows():
             records.append((
@@ -306,7 +309,7 @@ class DataFetcher:
             ))
 
         # Batch upsert using ON CONFLICT
-        print(f"Upserting {len(records)} records in batches of 1000...")
+        logger.info(f"Upserting {len(records)} records in batches of 1000...")
         with conn.cursor() as cur:
             # Use execute_batch for better performance
             from psycopg2.extras import execute_batch
@@ -330,12 +333,12 @@ class DataFetcher:
                         volume = EXCLUDED.volume
                 """, batch, page_size=batch_size)
 
-                print(f"  Batch {batch_num}/{total_batches} complete ({len(batch)} records)")
+                logger.info(f"  Batch {batch_num}/{total_batches} complete ({len(batch)} records)")
 
             # Commit the transaction
-            print("Committing transaction...")
+            logger.info("Committing transaction...")
             conn.commit()
-            print("Done!")
+            logger.info("Done!")
 
         # For simplicity, return total count as inserted (actual split not tracked with ON CONFLICT)
         return len(df), 0

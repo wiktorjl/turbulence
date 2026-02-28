@@ -1,8 +1,12 @@
 # Turbulence - Market Regime Detection System
 
-A comprehensive CLI tool for detecting financial market turbulence using multi-tier statistical models and cross-asset analysis.
+A CLI tool for detecting financial market turbulence using multi-tier statistical models and cross-asset analysis. Combines VIX indicators, HMM, GARCH, and Mahalanobis-distance turbulence indices to classify market regimes (low/normal/elevated/extreme) and inform position sizing, stop widths, and strategy selection for ES futures and options trading.
 
-**📖 Quick Start:** See [USAGE.md](USAGE.md) for complete executive summary and usage guide.
+## Prerequisites
+
+- Python 3.8+
+- PostgreSQL (with an existing `stock_prices` table, or use `turbulence init-db` to create the schema)
+- Polygon.io API key (optional; falls back to yfinance for free data)
 
 ## Quick Start
 
@@ -10,36 +14,20 @@ A comprehensive CLI tool for detecting financial market turbulence using multi-t
 # 1. Activate virtual environment
 source .venv/bin/activate
 
-# 2. Migrate to new schema (one-time, if upgrading from old version)
-python migrate_tables.py
+# 2. Install in development mode
+pip install -e .
 
 # 3. Initialize database
-python -m turbulence.cli init-db
+turbulence init-db
 
 # 4. Fetch historical data (5 years, default tickers)
-python -m turbulence.cli fetch-data
+turbulence fetch-data
 
 # 5. Compute turbulence indicators
-python -m turbulence.cli compute
+turbulence compute
 
 # 6. Check current market regime
-python -m turbulence.cli status --detailed
-```
-
-## Overview
-
-The Turbulence system combines VIX indicators, statistical models (HMM, GARCH), and multi-asset turbulence indices to classify market regimes and provide actionable trading insights for ES futures and options traders.
-
-**New:** Now uses your existing `stock_prices` table and adds only 3 turbulence-specific tables with `turbulence_` prefix.
-
-## Installation
-
-```bash
-# Activate virtual environment
-source .venv/bin/activate
-
-# Install in development mode
-pip install -e .
+turbulence status --detailed
 ```
 
 ## Architecture
@@ -68,7 +56,7 @@ Combines five normalized (0-1) components with weights:
 - Turbulence index percentile (25%)
 - GARCH conditional vol percentile (15%)
 
-Maps to four regimes:
+Maps to four regimes using fixed thresholds with a 3-day persistence filter:
 - **Low** (0.00-0.25): Calm markets, normal trading
 - **Normal** (0.25-0.50): Average volatility
 - **Elevated** (0.50-0.75): Heightened uncertainty, reduce risk
@@ -82,7 +70,7 @@ Maps to four regimes:
 turbulence init-db
 ```
 
-Creates PostgreSQL tables for price data, volatility metrics, regime classifications, and composite scores.
+Creates PostgreSQL tables for volatility metrics, regime classifications, and composite scores.
 
 ### Fetch Market Data
 
@@ -106,9 +94,6 @@ turbulence compute
 # Compute specific tier
 turbulence compute --indicators tier1
 
-# Retrain statistical models
-turbulence compute --retrain
-
 # Compute for specific date range
 turbulence compute --start-date 2024-01-01
 ```
@@ -124,12 +109,13 @@ turbulence status --detailed
 
 # Export status as JSON
 turbulence status --format json
-
-# Check status for specific date
-turbulence status --date 2024-03-15
 ```
 
 ### Run Backtest
+
+Walk-forward validation that slides a training window through historical data,
+running the full tier1-tier2-tier3-composite pipeline on each window and evaluating
+out-of-sample predictions.
 
 ```bash
 # Standard 3-year train / 6-month test backtest
@@ -144,26 +130,42 @@ turbulence backtest --start-date 2015-01-01 --output backtest_results.csv
 
 ### Generate Report
 
+Generates a self-contained HTML report with regime timeline, component analysis,
+and trading recommendations.
+
 ```bash
 # Generate HTML report for last year
 turbulence report --output turbulence_report.html
 
-# Generate PDF report for custom period
-turbulence report --start-date 2020-01-01 --end-date 2023-12-31 --output report.pdf --format pdf
+# Generate report for custom period
+turbulence report --start-date 2020-01-01 --end-date 2023-12-31 --output report.html
+
+# Generate report without charts (faster)
+turbulence report --output report.html --no-include-charts
+```
+
+Note: PDF output requires the `weasyprint` package (`pip install weasyprint`).
+
+### Generate Chart
+
+```bash
+# Generate turbulence chart (requires matplotlib)
+turbulence chart --output chart.png
+
+# YTD chart
+turbulence chart --ytd --output ytd.png
 ```
 
 ## Configuration
 
-Configuration is managed via `.env` file:
+Configuration is managed via `.env` file at the project root:
 
 ```bash
-# PostgreSQL connection
+# PostgreSQL connection (required)
 DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
 
-# Polygon.io API credentials
+# Polygon.io API key (optional; falls back to yfinance)
 POLYGON_API_KEY=your_api_key
-POLYGON_S3_ACCESS_KEY=your_s3_key
-POLYGON_S3_SECRET_KEY=your_s3_secret
 
 # Optional settings
 LOG_LEVEL=INFO
@@ -175,27 +177,23 @@ API_MAX_RETRIES=3
 
 ## Database Schema
 
-### stock_prices (Existing - Not Modified)
+### stock_prices (existing table, not modified)
 - ticker, date, open, high, low, close, volume
-- Your existing table for OHLCV data
 
-### turbulence_volatility_metrics (New)
+### turbulence_volatility_metrics
 - ticker, date, garman_klass_vol, parkinson_vol, rogers_satchell_vol, etc.
-- Stores calculated volatility metrics
 
-### turbulence_regime_classifications (New)
+### turbulence_regime_classifications
 - date, vix_level, vix_regime, turbulence_index, hmm_state, absorption_ratio, etc.
-- Stores regime indicators and model outputs
 
-### turbulence_composite_scores (New)
+### turbulence_composite_scores
 - date, vix_component, turbulence_component, composite_score, regime_label
-- Stores final composite scores and regime classifications
 
 ## Trading Applications
 
 ### ES Futures
 - **Position sizing**: Cut risk 25-50% when turbulence > 0.50, half size when > 0.75
-- **Stop widths**: Widen S/R zones by 1.5× ATR in high-vol regimes
+- **Stop widths**: Widen S/R zones by 1.5x ATR in high-vol regimes
 - **Strategy selection**: S/R bounces in low-vol, momentum/breakout in high-vol
 
 ### Options
@@ -215,28 +213,20 @@ src/turbulence/
 ├── tier1.py             # VIX and Garman-Klass indicators
 ├── tier2.py             # HMM, GARCH, Hamilton models
 ├── tier3.py             # Turbulence index, Absorption Ratio, GMM
-├── composite.py         # Composite scoring with hysteresis
+├── composite.py         # Composite scoring with persistence filter
+├── backtest.py          # Walk-forward validation engine
+├── report.py            # HTML report generator
 └── utils.py             # Error handling and utilities
 ```
-
-## Data Sources
-
-- **yfinance**: Free daily data for equities, ETFs, VIX indices
-- **Polygon.io**: Premium market data with API credentials (configured in .env)
-- **FRED API**: Credit spreads, yield curves (optional, via fredapi library)
-
-## Key References
-
-- Kritzman & Li (2010): "Skulls, Financial Turbulence, and Risk Management"
-- Hamilton (1989): Regime-switching framework
-- Ang & Bekaert (2002, 2004): Regime-based asset allocation
-- Kritzman et al. (2011): Absorption ratio for systemic risk
 
 ## Development
 
 ```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
 # Run tests
-pytest tests/
+pytest tests/ -v
 
 # Code formatting
 black src/
@@ -245,6 +235,15 @@ black src/
 mypy src/
 ```
 
+## Key References
+
+- Kritzman & Li (2010): "Skulls, Financial Turbulence, and Risk Management"
+- Hamilton (1989): Regime-switching framework
+- Ang & Bekaert (2002, 2004): Regime-based asset allocation
+- Kritzman et al. (2011): Absorption ratio for systemic risk
+
 ## License
 
-See TURBULENCE.md for the full design document and academic references.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+See [TURBULENCE.md](docs/TURBULENCE.md) for the full design document and academic references.

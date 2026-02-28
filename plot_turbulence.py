@@ -94,7 +94,6 @@ def plot_turbulence_chart(df, output_file=None):
         regime = df.iloc[-1]['regime_label'].lower()
         color = regime_colors.get(regime, '#CCCCCC')
         # Extend slightly beyond last date for visibility
-        import matplotlib.dates as mdates
         last_date = df.iloc[-1]['date']
         extended_date = last_date + pd.Timedelta(days=2)
         ax.axvspan(last_date, extended_date, facecolor=color, alpha=0.2, zorder=0)
