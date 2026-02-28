@@ -629,6 +629,9 @@ def backtest(start_date, end_date, train_window, test_window, step_size, output)
         columns = ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']
         all_prices = pd.DataFrame(rows, columns=columns)
         all_prices['date'] = pd.to_datetime(all_prices['date'])
+        # Convert Decimal types from PostgreSQL to float for numpy compatibility
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            all_prices[col] = pd.to_numeric(all_prices[col], errors='coerce')
 
         # Build price_data (SPY OHLCV + VIX columns)
         spy = all_prices[all_prices['ticker'] == 'SPY'].set_index('date').sort_index()
