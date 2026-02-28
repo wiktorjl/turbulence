@@ -2,6 +2,70 @@
 
 A CLI tool for detecting financial market turbulence using multi-tier statistical models and cross-asset analysis. Combines VIX indicators, HMM, GARCH, and Mahalanobis-distance turbulence indices to classify market regimes (low/normal/elevated/extreme) and inform position sizing, stop widths, and strategy selection for ES futures and options trading.
 
+## What Is This and Why Does It Matter?
+
+Markets don't behave the same way all the time. A strategy that prints money in calm markets can blow up during a crisis, and vice versa. The core problem is knowing *which* market environment you're in *right now* — not after the fact.
+
+Turbulence answers one question: **how stressed is the market today, on a scale from 0 to 1?**
+
+It does this by combining multiple independent signals, each capturing a different facet of market stress:
+
+- **VIX level** — the market's own fear gauge. VIX at 12 is a different world than VIX at 35.
+- **VIX term structure** — when short-term fear exceeds long-term fear (backwardation), something is breaking. This often catches stress before VIX levels alone do.
+- **Realized volatility** — what's actually happening in price action, not just what options markets imply. Uses Garman-Klass (OHLC-based) for efficiency.
+- **GARCH conditional volatility** — a statistical model that captures volatility clustering ("big moves follow big moves") and the leverage effect (down moves spike vol more than up moves).
+- **Cross-asset turbulence** — the Kritzman & Li index measures whether assets are behaving unusually *relative to each other*. When correlations break down — stocks falling while bonds also fall, gold dropping during a selloff — that's genuine turbulence, not just high volatility.
+
+No single indicator is reliable on its own. VIX can stay elevated while markets grind higher. Realized vol can lag. GARCH can overfit. The composite score averages out their individual noise and captures the signal they agree on.
+
+The output is a single number (0-1) mapped to four regimes:
+
+| Regime | Score | What it means | What to do |
+|--------|-------|---------------|------------|
+| **Low** | 0.00 - 0.25 | Calm, compressed vol, possibly complacent | Full size, S/R strategies, buy cheap puts |
+| **Normal** | 0.25 - 0.50 | Business as usual | Standard risk, balanced approach |
+| **Elevated** | 0.50 - 0.75 | Something is happening — correlations shifting, vol expanding | Cut risk 25-50%, widen stops, favor momentum |
+| **Extreme** | 0.75 - 1.00 | Crisis — everything is correlated, vol is spiking | Half size or less, defined-risk only, no naked premium |
+
+A 3-day persistence filter prevents whipsaw — the regime only officially changes after 3 consecutive days in the new state, so you're not constantly flipping positions on noise.
+
+## How It Works
+
+The system processes market data through three tiers of increasing complexity, then combines everything into one score:
+
+```
+                    Market Data (SPY, TLT, GLD, UUP, HYG, VIX, VIX3M)
+                                        |
+                    +-------------------+-------------------+
+                    |                   |                   |
+               Tier 1: Fast       Tier 2: Statistical  Tier 3: Multi-Asset
+            (VIX thresholds,     (HMM filtered probs,  (Mahalanobis distance,
+             term structure,      GJR-GARCH cond vol,   Absorption Ratio,
+             Garman-Klass vol)    Hamilton switching)    GMM clustering)
+                    |                   |                   |
+                    +-------------------+-------------------+
+                                        |
+                              Normalize to [0, 1]
+                           (rolling 252-day percentiles)
+                                        |
+                              Weighted Composite Score
+                         (VIX 25%, Vol 20%, Turb 25%,
+                          GARCH 15%, Term Structure 15%)
+                                        |
+                         Fixed Thresholds: 0.25 / 0.50 / 0.75
+                                        |
+                          3-Day Persistence Filter
+                                        |
+                              Final Regime Label
+                         (low / normal / elevated / extreme)
+```
+
+**Why three tiers?** Tier 1 is instant — just compare VIX to thresholds. Tier 2 uses statistical models that capture dynamics (volatility clustering, regime persistence). Tier 3 looks across asset classes to detect systemic stress that no single-asset model can see. Each tier catches things the others miss.
+
+**Why rolling percentiles instead of raw values?** A GARCH conditional vol of 0.02 means nothing in absolute terms — it depends on what's normal for this market. By converting everything to rolling 252-day percentile ranks, each component answers "how unusual is this reading compared to the last year?" on a consistent 0-1 scale.
+
+![Turbulence Chart](screenshots/turbulence_ytd_2026.png)
+
 ## Prerequisites
 
 - Python 3.8+
@@ -130,21 +194,21 @@ turbulence backtest --start-date 2015-01-01 --output backtest_results.csv
 
 ### Generate Report
 
-Generates a self-contained HTML report with regime timeline, component analysis,
+Generates a self-contained HTML or PDF report with regime timeline, component analysis,
 and trading recommendations.
 
 ```bash
 # Generate HTML report for last year
 turbulence report --output turbulence_report.html
 
-# Generate report for custom period
-turbulence report --start-date 2020-01-01 --end-date 2023-12-31 --output report.html
+# Generate PDF report for custom period
+turbulence report --start-date 2020-01-01 --end-date 2023-12-31 --output report.pdf --format pdf
 
 # Generate report without charts (faster)
 turbulence report --output report.html --no-include-charts
 ```
 
-Note: PDF output requires the `weasyprint` package (`pip install weasyprint`).
+PDF output requires the `weasyprint` package (`pip install weasyprint`).
 
 ### Generate Chart
 
@@ -210,12 +274,13 @@ src/turbulence/
 ├── config.py            # Configuration management
 ├── database.py          # PostgreSQL schema and connection pooling
 ├── data_fetcher.py      # Polygon.io + yfinance data fetching
+├── plotting.py          # Chart generation with regime zones
 ├── tier1.py             # VIX and Garman-Klass indicators
 ├── tier2.py             # HMM, GARCH, Hamilton models
 ├── tier3.py             # Turbulence index, Absorption Ratio, GMM
 ├── composite.py         # Composite scoring with persistence filter
 ├── backtest.py          # Walk-forward validation engine
-├── report.py            # HTML report generator
+├── report.py            # HTML/PDF report generator
 └── utils.py             # Error handling and utilities
 ```
 

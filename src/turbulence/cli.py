@@ -847,21 +847,19 @@ def chart(start_date, end_date, ytd, last_3m, last_6m, output):
         turbulence chart --ytd --output turbulence_ytd.png
     """
     try:
-        from datetime import datetime, timedelta
-        import subprocess
-        import os
+        from turbulence.plotting import fetch_turbulence_data, plot_turbulence_chart
 
         # Determine date range
         if last_3m:
             start = datetime.now() - timedelta(days=90)
             start_date = start.strftime('%Y-%m-%d')
             if not output:
-                output = f"turbulence_3months.png"
+                output = "turbulence_3months.png"
         elif last_6m:
             start = datetime.now() - timedelta(days=180)
             start_date = start.strftime('%Y-%m-%d')
             if not output:
-                output = f"turbulence_6months.png"
+                output = "turbulence_6months.png"
         elif ytd or (start_date is None and end_date is None):
             start_date = f"{datetime.now().year}-01-01"
             if not output:
@@ -872,27 +870,12 @@ def chart(start_date, end_date, ytd, last_3m, last_6m, output):
             if end_date:
                 end_date = end_date.strftime('%Y-%m-%d')
 
-        # Build command
-        script_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plot_turbulence.py')
-        cmd = ['python', script_path]
-
-        if start_date:
-            cmd.extend(['--start-date', start_date])
-        if end_date:
-            cmd.extend(['--end-date', end_date])
-        if output:
-            cmd.extend(['--output', output])
-
         click.echo(f"Generating chart from {start_date or 'earliest'} to {end_date or 'today'}...")
 
-        # Run the plot script
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        df = fetch_turbulence_data(start_date, end_date)
+        click.echo(f"Found {len(df)} data points")
 
-        if result.returncode == 0:
-            click.echo(result.stdout)
-        else:
-            click.echo(f"Error generating chart: {result.stderr}", err=True)
-            sys.exit(1)
+        plot_turbulence_chart(df, output)
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
