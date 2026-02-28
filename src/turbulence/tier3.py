@@ -7,6 +7,7 @@ This module implements advanced multi-asset turbulence measures:
 3. Gaussian Mixture Models for regime clustering
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from typing import Optional, Tuple, Dict, List
@@ -14,6 +15,8 @@ from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.covariance import LedoitWolf
 import warnings
+
+logger = logging.getLogger(__name__)
 
 
 class KritzmanLiTurbulence:
@@ -464,7 +467,7 @@ def calculate_tier3_indicators(
     # Calculate how many models we'll fit for progress indication
     valid_range = max(0, len(returns) - clustering_train_window)
     total_fits = (valid_range + clustering_refit_days - 1) // clustering_refit_days
-    print(f"\nTier 3 Regime Clustering: Refitting every {clustering_refit_days} days (~{total_fits} fits)...")
+    logger.info(f"Tier 3 Regime Clustering: Refitting every {clustering_refit_days} days (~{total_fits} fits)...")
 
     # Track the last fitted model to reuse between refits
     last_rc = None
@@ -499,7 +502,7 @@ def calculate_tier3_indicators(
                 # Show progress
                 if fits_completed % 10 == 0 or i == len(returns) - 1:
                     progress_pct = (fits_completed / total_fits * 100) if total_fits > 0 else 0
-                    print(f"  Progress: {fits_completed}/{total_fits} fits ({progress_pct:.1f}%) - Date: {returns.index[i].strftime('%Y-%m-%d')}")
+                    logger.info(f"  Progress: {fits_completed}/{total_fits} fits ({progress_pct:.1f}%) - Date: {returns.index[i].strftime('%Y-%m-%d')}")
 
             except Exception as e:
                 warnings.warn(f"Regime clustering failed at index {i}: {str(e)}")
@@ -520,7 +523,7 @@ def calculate_tier3_indicators(
                 regimes.iloc[i] = np.nan
                 regime_probs.iloc[i] = np.nan
 
-    print(f"  Completed: {fits_completed} GMM models fitted")
+    logger.info(f"  Completed: {fits_completed} GMM models fitted")
 
     results['regime'] = regimes
     results['regime_probs'] = regime_probs

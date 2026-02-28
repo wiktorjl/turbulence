@@ -609,27 +609,88 @@ def backtest(start_date, end_date, train_window, test_window, step_size, output)
 
         db = get_db_manager()
 
-        # TODO: Import and use backtesting module once available
-        # from turbulence.backtest import run_walk_forward
-        # results = run_walk_forward(
-        #     db, start_date, end_date,
-        #     train_window, test_window, step_size
-        # )
+        # Fetch price data from database
+        import pandas as pd
+        with db.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT sp.ticker, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
+                    FROM stock_prices sp
+                    WHERE sp.date >= %s AND sp.date <= %s
+                    ORDER BY sp.date
+                """, (start_date.date(), end_date.date()))
+                rows = cur.fetchall()
 
-        click.echo("\nRunning walk-forward validation...")
+        if not rows:
+            click.echo("Error: No price data found in database for the specified period.", err=True)
+            click.echo("Run 'turbulence fetch-data' first.", err=True)
+            sys.exit(1)
+
+        columns = ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']
+        all_prices = pd.DataFrame(rows, columns=columns)
+        all_prices['date'] = pd.to_datetime(all_prices['date'])
+
+        # Build price_data (SPY OHLCV + VIX columns)
+        spy = all_prices[all_prices['ticker'] == 'SPY'].set_index('date').sort_index()
+        vix = all_prices[all_prices['ticker'] == '^VIX'].set_index('date')['close'].rename('vix')
+        vix3m = all_prices[all_prices['ticker'] == '^VIX3M'].set_index('date')['close'].rename('vix3m')
+
+        price_data = spy[['open', 'high', 'low', 'close', 'volume']].copy()
+        price_data = price_data.join(vix).join(vix3m)
+        price_data = price_data.dropna(subset=['close'])
+
+        # Build returns_data for Tier 3
+        asset_tickers = ['SPY', 'TLT', 'GLD', 'UUP', 'HYG']
+        returns_frames = {}
+        for ticker in asset_tickers:
+            t_data = all_prices[all_prices['ticker'] == ticker].set_index('date')['close']
+            if not t_data.empty:
+                returns_frames[ticker] = t_data.pct_change()
+        returns_data = pd.DataFrame(returns_frames).dropna()
+
+        if len(price_data) < train_window + test_window:
+            click.echo(f"Error: Only {len(price_data)} days of data, need at least {train_window + test_window}.", err=True)
+            sys.exit(1)
+
+        click.echo(f"\nLoaded {len(price_data)} days of price data.")
+        click.echo("Running walk-forward validation...")
+
+        from turbulence.backtest import run_walk_forward, summarize_backtest
+
+        def progress_cb(current, total):
+            pass  # Progress shown via click.progressbar below
+
         with click.progressbar(length=num_iterations, label='Progress') as bar:
-            for i in range(num_iterations):
-                # Placeholder for actual backtest iterations
-                bar.update(1)
+            iteration_count = [0]
+            def update_bar(current, total):
+                delta = current - iteration_count[0]
+                if delta > 0:
+                    bar.update(delta)
+                    iteration_count[0] = current
 
-        click.echo("\n⚠ Backtesting module not yet implemented.")
-        click.echo("Placeholder: Would run walk-forward validation with specified parameters.")
+            results = run_walk_forward(
+                price_data=price_data,
+                returns_data=returns_data,
+                start_date=pd.Timestamp(start_date),
+                end_date=pd.Timestamp(end_date),
+                train_window=train_window,
+                test_window=test_window,
+                step_size=step_size,
+                progress_callback=update_bar,
+            )
 
-        if output:
-            click.echo(f"\nResults would be saved to: {output}")
+        if results.empty:
+            click.echo("\nNo results produced. Check that data covers the specified period.")
+        else:
+            click.echo()
+            click.echo(summarize_backtest(results))
+
+            if output:
+                results.to_csv(output, index=False)
+                click.echo(f"\nResults saved to: {output}")
 
         db.close()
-        click.echo("✓ Backtest complete.")
+        click.echo("\nBacktest complete.")
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -706,34 +767,19 @@ def report(start_date, end_date, output, format, include_charts):
 
         db = get_db_manager()
 
-        # TODO: Import and use reporting module once available
-        # from turbulence.reporting import generate_report
-        # generate_report(
-        #     db, start_date, end_date,
-        #     output_path=output,
-        #     format=format,
-        #     include_charts=include_charts
-        # )
+        from turbulence.report import generate_report
 
-        sections = [
-            "Executive Summary",
-            "Current Regime Status",
-            "Historical Regime Timeline",
-            "Component Indicator Analysis",
-            "Cross-Asset Turbulence Metrics",
-            "Statistical Model Parameters",
-            "Trading Recommendations"
-        ]
-
-        click.echo("Report sections:")
-        for section in sections:
-            click.echo(f"  - {section}")
-
-        click.echo("\n⚠ Report generation module not yet implemented.")
-        click.echo("Placeholder: Would generate comprehensive analysis report.")
+        output_path = generate_report(
+            db=db,
+            start_date=start_date,
+            end_date=end_date,
+            output_path=output,
+            format=format,
+            include_charts=include_charts,
+        )
 
         db.close()
-        click.echo(f"\n✓ Report would be saved to: {output}")
+        click.echo(f"\nReport saved to: {output_path}")
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
