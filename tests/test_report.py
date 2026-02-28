@@ -65,8 +65,8 @@ class TestGenerateReport:
         mock_cursor.fetchall.return_value = rows
         mock_cursor.description = [
             ('date',), ('composite_score',), ('regime_label',),
-            ('vix_component',), ('vol_component',), ('turbulence_component',),
-            ('garch_component',), ('term_structure_component',),
+            ('vix_component',), ('realized_vol_component',), ('turbulence_component',),
+            ('garch_component',), ('vix_term_component',),
         ]
         mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
         mock_cursor.__exit__ = MagicMock(return_value=False)

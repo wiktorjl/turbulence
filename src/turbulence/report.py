@@ -245,8 +245,8 @@ def generate_report(
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT date, composite_score, regime_label,
-                       vix_component, vol_component, turbulence_component,
-                       garch_component, term_structure_component
+                       vix_component, realized_vol_component, turbulence_component,
+                       garch_component, vix_term_component
                 FROM turbulence_composite_scores
                 WHERE date >= %s AND date <= %s
                 ORDER BY date
@@ -276,14 +276,14 @@ def generate_report(
     regime_periods = _compute_regime_periods(df['regime_label'])
 
     # --- Section 3: Component Scores ---
-    component_cols = ['vix_component', 'vol_component', 'turbulence_component',
-                      'garch_component', 'term_structure_component']
+    component_cols = ['vix_component', 'realized_vol_component', 'turbulence_component',
+                      'garch_component', 'vix_term_component']
     component_names = {
         'vix_component': 'VIX Percentile',
-        'vol_component': 'Realized Volatility',
+        'realized_vol_component': 'Realized Volatility',
         'turbulence_component': 'Turbulence Index',
         'garch_component': 'GARCH Conditional Vol',
-        'term_structure_component': 'VIX Term Structure',
+        'vix_term_component': 'VIX Term Structure',
     }
 
     # --- Section 4: Regime Statistics ---
@@ -380,8 +380,8 @@ def generate_report(
     # Component Scores
     html_parts.append("<h2>Component Scores (Latest)</h2>")
     html_parts.append("<table><tr><th>Component</th><th>Score</th><th>Weight</th></tr>")
-    weights = {'vix_component': 0.25, 'vol_component': 0.20, 'turbulence_component': 0.25,
-               'garch_component': 0.15, 'term_structure_component': 0.15}
+    weights = {'vix_component': 0.25, 'realized_vol_component': 0.20, 'turbulence_component': 0.25,
+               'garch_component': 0.15, 'vix_term_component': 0.15}
     for col in component_cols:
         val = latest.get(col, None)
         val_str = f"{val:.3f}" if val is not None and not pd.isna(val) else "N/A"
