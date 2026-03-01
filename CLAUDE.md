@@ -22,7 +22,7 @@ pip install -e ".[dev]"
 
 # Run the CLI (after install)
 turbulence --help
-turbulence init-db
+turbulence init
 turbulence fetch-data
 turbulence compute
 turbulence status --detailed
@@ -30,9 +30,8 @@ turbulence status --detailed
 # Alternative: run without installing
 python -m turbulence.cli --help
 
-# Run tests (test files are at repo root, not in tests/ dir)
-python test_database_setup.py
-python test_full_data_fetch.py
+# Run tests
+pytest tests/ -v
 
 # Formatting and linting
 black src/
@@ -40,7 +39,7 @@ flake8 src/
 mypy src/
 
 # Generate turbulence chart
-python plot_turbulence.py --start-date 2024-01-01 --output chart.png
+turbulence chart --ytd --output chart.png
 ```
 
 ## Architecture
@@ -49,29 +48,28 @@ python plot_turbulence.py --start-date 2024-01-01 --output chart.png
 
 The package uses a `src` layout with setuptools. Entry point: `turbulence.cli:main` (Click CLI).
 
-**Data flow:** `data_fetcher.py` → PostgreSQL → `cli.py compute` reads from DB → runs `tier1` → `tier2` → `tier3` → `composite.py` → writes results back to DB.
+**Data flow:** `data_fetcher.py` → parquet files → `cli.py compute` reads from parquet → runs `tier1` → `tier2` → `tier3` → `composite.py` → writes results back to parquet.
 
-- **`config.py`** — Singleton `Config` class loading from `.env` via `python-dotenv`. Required env vars: `DATABASE_URL`, `POLYGON_API_KEY`.
-- **`database.py`** — `DatabaseManager` with psycopg2 connection pooling. Creates 3 turbulence-specific tables (`turbulence_volatility_metrics`, `turbulence_regime_classifications`, `turbulence_composite_scores`). Relies on pre-existing `stock_prices` and `companies` tables.
-- **`data_fetcher.py`** — `DataFetcher` tries Polygon.io first, falls back to yfinance. Handles yfinance's exclusive end date by adding +1 day. Ensures tickers exist in `companies` table before inserting prices.
+**Storage:** All data stored as parquet files in `~/.turbulence/data/` (configurable via `TURBULENCE_DATA_DIR` env var). See `storage.py`.
+
+- **`config.py`** — Singleton `Config` class loading from `.env` via `python-dotenv`. Optional env var: `TURBULENCE_DATA_DIR`.
+- **`storage.py`** — Parquet-based file storage. Functions: `save_prices()`, `load_prices()`, `load_all_prices()`, `save_composite_scores()`, `load_composite_scores()`, `save_regime_classifications()`, `load_regime_classifications()`. Upsert semantics on save.
+- **`data_fetcher.py`** — `DataFetcher` uses yfinance for all data fetching. Stores to parquet via `storage.save_prices()`.
 - **`tier1.py`** — VIX regime classification (5 levels), VIX/VIX3M term structure ratio, Garman-Klass volatility (30-day rolling window, annualized), percentile-based classification (252-day rolling window).
 - **`tier2.py`** — Gaussian HMM (hmmlearn), GJR-GARCH(1,1) (arch library, scales returns to % for numerical stability), Hamilton regime-switching (statsmodels MarkovRegression). All have rolling-window variants.
 - **`tier3.py`** — `KritzmanLiTurbulence` (Mahalanobis distance with Ledoit-Wolf shrinkage), `AbsorptionRatio` (PCA on 500-day window), `RegimeClustering` (GMM with 5 rolling features).
 - **`composite.py`** — `CompositeScorer` combines 5 normalized components with configurable weights using simple fixed thresholds (0.25, 0.50, 0.75) and 3-day persistence filter to prevent whipsaw.
 - **`utils.py`** — Custom exceptions (`DatabaseConnectionError`, `APIRateLimitError`, `MissingDataError`, `NumericalInstabilityError`), retry/rate-limit decorators, covariance matrix regularization.
 
-### Unimplemented Features
-
-The `backtest` and `report` CLI commands are stubs with placeholder logic (marked with TODO comments in `cli.py`). The `chart` command delegates to `plot_turbulence.py`.
-
 ## Configuration
 
-Requires a `.env` file at project root:
+Optional `.env` file at project root:
 ```
-DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
-POLYGON_API_KEY=your_key
+TURBULENCE_DATA_DIR=~/.turbulence/data   # optional, this is the default
+LOG_LEVEL=INFO
+API_RATE_LIMIT_DELAY=0.2
+API_MAX_RETRIES=3
 ```
-Optional: `LOG_LEVEL`, `DB_POOL_MIN`, `DB_POOL_MAX`, `API_RATE_LIMIT_DELAY`, `API_MAX_RETRIES`, `POLYGON_S3_ACCESS_KEY`, `POLYGON_S3_SECRET_KEY`.
 
 ## Critical Implementation Guidelines
 

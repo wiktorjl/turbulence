@@ -28,6 +28,7 @@ classifiers = [
 dependencies = [
     "numpy",
     "pandas",
+    "pyarrow",
     "yfinance",
     "hmmlearn",
     "statsmodels",
@@ -35,7 +36,6 @@ dependencies = [
     "scikit-learn",
     "fredapi",
     "click",
-    "psycopg2-binary",
     "python-dotenv",
 ]
 

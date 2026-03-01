@@ -5,7 +5,6 @@ from functools import wraps
 from typing import Any, Callable, Optional, TypeVar
 
 import numpy as np
-import psycopg2
 
 from turbulence.config import get_config, get_logger
 
@@ -107,35 +106,6 @@ def rate_limit(delay: Optional[float] = None) -> Callable:
 
         return wrapper
     return decorator
-
-
-def safe_database_operation(func: Callable[..., T]) -> Callable[..., T]:
-    """
-    Decorator to handle database connection errors gracefully.
-
-    Args:
-        func: Function that performs database operations
-
-    Returns:
-        Decorated function with error handling
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs) -> T:
-        try:
-            return func(*args, **kwargs)
-        except psycopg2.OperationalError as e:
-            logger.error(f"Database connection failed: {e}")
-            raise DatabaseConnectionError(
-                f"Failed to connect to database. Please check your DATABASE_URL configuration."
-            ) from e
-        except psycopg2.IntegrityError as e:
-            logger.error(f"Database integrity error: {e}")
-            raise
-        except psycopg2.Error as e:
-            logger.error(f"Database error: {e}")
-            raise
-
-    return wrapper
 
 
 def check_covariance_matrix(cov_matrix: np.ndarray, name: str = "covariance") -> np.ndarray:

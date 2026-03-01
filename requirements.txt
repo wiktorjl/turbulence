@@ -1,5 +1,6 @@
 numpy
 pandas
+pyarrow
 yfinance
 hmmlearn
 statsmodels
@@ -7,6 +8,6 @@ arch
 scikit-learn
 fredapi
 click
-psycopg2-binary
 python-dotenv
 matplotlib
+weasyprint

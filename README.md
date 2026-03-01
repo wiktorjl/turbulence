@@ -69,8 +69,8 @@ The system processes market data through three tiers of increasing complexity, t
 ## Prerequisites
 
 - Python 3.8+
-- PostgreSQL (with an existing `stock_prices` table, or use `turbulence init-db` to create the schema)
-- Polygon.io API key (optional; falls back to yfinance for free data)
+
+No external database or API keys required. Data is fetched from Yahoo Finance and stored locally as parquet files.
 
 ## Quick Start
 
@@ -81,8 +81,8 @@ source .venv/bin/activate
 # 2. Install in development mode
 pip install -e .
 
-# 3. Initialize database
-turbulence init-db
+# 3. Initialize data directory
+turbulence init
 
 # 4. Fetch historical data (5 years, default tickers)
 turbulence fetch-data
@@ -92,6 +92,18 @@ turbulence compute
 
 # 6. Check current market regime
 turbulence status --detailed
+```
+
+### Docker
+
+```bash
+# Build the image
+docker build -t turbulence .
+
+# Run with persistent data
+docker run -v turbulence-data:/root/.turbulence/data turbulence fetch-data
+docker run -v turbulence-data:/root/.turbulence/data turbulence compute
+docker run -v turbulence-data:/root/.turbulence/data turbulence status --detailed
 ```
 
 ## Architecture
@@ -128,13 +140,13 @@ Maps to four regimes using fixed thresholds with a 3-day persistence filter:
 
 ## CLI Commands
 
-### Initialize Database
+### Initialize Data Directory
 
 ```bash
-turbulence init-db
+turbulence init
 ```
 
-Creates PostgreSQL tables for volatility metrics, regime classifications, and composite scores.
+Creates the `~/.turbulence/data/` directory structure for storing price data and computed results as parquet files.
 
 ### Fetch Market Data
 
@@ -144,9 +156,6 @@ turbulence fetch-data
 
 # Fetch specific date range and tickers
 turbulence fetch-data --start-date 2020-01-01 --end-date 2023-12-31 --tickers SPY,VIX
-
-# Initialize DB and fetch data in one command
-turbulence fetch-data --init-db
 ```
 
 ### Compute Indicators
@@ -222,36 +231,36 @@ turbulence chart --ytd --output ytd.png
 
 ## Configuration
 
-Configuration is managed via `.env` file at the project root:
+Configuration is managed via environment variables or a `.env` file at the project root:
 
 ```bash
-# PostgreSQL connection (required)
-DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
-
-# Polygon.io API key (optional; falls back to yfinance)
-POLYGON_API_KEY=your_api_key
+# Data directory (optional, defaults to ~/.turbulence/data)
+TURBULENCE_DATA_DIR=/path/to/data
 
 # Optional settings
 LOG_LEVEL=INFO
-DB_POOL_MIN=1
-DB_POOL_MAX=10
 API_RATE_LIMIT_DELAY=0.2
 API_MAX_RETRIES=3
 ```
 
-## Database Schema
+## Data Storage
 
-### stock_prices (existing table, not modified)
-- ticker, date, open, high, low, close, volume
+All data is stored as parquet files in `~/.turbulence/data/` (configurable via `TURBULENCE_DATA_DIR`):
 
-### turbulence_volatility_metrics
-- ticker, date, garman_klass_vol, parkinson_vol, rogers_satchell_vol, etc.
-
-### turbulence_regime_classifications
-- date, vix_level, vix_regime, turbulence_index, hmm_state, absorption_ratio, etc.
-
-### turbulence_composite_scores
-- date, vix_component, turbulence_component, composite_score, regime_label
+```
+~/.turbulence/data/
+├── prices/
+│   ├── SPY.parquet
+│   ├── TLT.parquet
+│   ├── GLD.parquet
+│   ├── UUP.parquet
+│   ├── HYG.parquet
+│   ├── VIX.parquet
+│   └── VIX3M.parquet
+├── composite_scores.parquet
+├── regime_classifications.parquet
+└── volatility_metrics.parquet
+```
 
 ## Trading Applications
 
@@ -272,8 +281,8 @@ src/turbulence/
 ├── __init__.py          # Package initialization and exports
 ├── cli.py               # Click-based CLI interface
 ├── config.py            # Configuration management
-├── database.py          # PostgreSQL schema and connection pooling
-├── data_fetcher.py      # Polygon.io + yfinance data fetching
+├── storage.py           # Parquet-based file storage layer
+├── data_fetcher.py      # yfinance data fetching
 ├── plotting.py          # Chart generation with regime zones
 ├── tier1.py             # VIX and Garman-Klass indicators
 ├── tier2.py             # HMM, GARCH, Hamilton models
