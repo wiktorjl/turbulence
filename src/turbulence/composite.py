@@ -264,25 +264,18 @@ def classify_regime_simple(
     if len(composite_score) == 0:
         return pd.Series(dtype=object)
 
-    regime_series = pd.Series(index=composite_score.index, dtype=object)
+    # Vectorized classification using np.select (replaces row-by-row loop)
+    conditions = [
+        composite_score < 0.25,
+        composite_score < 0.50,
+        composite_score < 0.75,
+    ]
+    choices = [Regime.LOW.value, Regime.NORMAL.value, Regime.ELEVATED.value]
+    regime_values = np.select(conditions, choices, default=Regime.EXTREME.value)
 
-    # Classify each score independently using fixed thresholds
-    for idx in composite_score.index:
-        score = composite_score.loc[idx]
-
-        if pd.isna(score):
-            regime_series.loc[idx] = None
-            continue
-
-        # Simple threshold classification
-        if score < 0.25:
-            regime_series.loc[idx] = Regime.LOW.value
-        elif score < 0.50:
-            regime_series.loc[idx] = Regime.NORMAL.value
-        elif score < 0.75:
-            regime_series.loc[idx] = Regime.ELEVATED.value
-        else:
-            regime_series.loc[idx] = Regime.EXTREME.value
+    regime_series = pd.Series(regime_values, index=composite_score.index, dtype=object)
+    # Preserve NaN from input
+    regime_series[composite_score.isna()] = None
 
     return regime_series
 
