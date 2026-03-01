@@ -13,22 +13,20 @@ A **market regime detection system** that tells you when to reduce risk, widen s
 
 ### 1. One-Time Setup
 
-Initialize the database schema (creates 3 turbulence-specific tables):
+Initialize the data directory (creates parquet storage structure):
 
 ```bash
 # Activate virtual environment
 source .venv/bin/activate
 
-# Initialize database (safe to run multiple times)
-python -m turbulence.cli init-db
+# Initialize data directory (safe to run multiple times)
+turbulence init
 ```
 
-This creates:
-- `turbulence_volatility_metrics` - Garman-Klass, Parkinson, Rogers-Satchell volatility
-- `turbulence_regime_classifications` - VIX regimes, HMM states, turbulence index
-- `turbulence_composite_scores` - Final composite turbulence score (0-1 scale)
-
-**Note:** Price data is stored in your existing `stock_prices` table (no duplication).
+This creates the directory structure under `~/.turbulence/data/` for:
+- Price data (OHLCV per ticker as parquet files)
+- Regime classifications (VIX regimes, HMM states)
+- Composite turbulence scores (final 0-1 scale scores)
 
 ### 2. Fetch Historical Data
 
@@ -45,7 +43,7 @@ python -m turbulence.cli fetch-data --start-date 2020-01-01 --end-date 2024-12-3
 python -m turbulence.cli fetch-data --tickers SPY,QQQ,^VIX
 ```
 
-Data is fetched from Yahoo Finance and stored as parquet files in `~/.turbulence/data/`.
+Data is fetched from Yahoo Finance via `yfinance` and stored as parquet files in `~/.turbulence/data/`.
 
 ### 3. Compute Turbulence Indicators
 
@@ -546,10 +544,10 @@ Outcome: Avoided high-risk environment, no trades = no losses
 ```bash
 # Add to crontab (crontab -e)
 # Run at 6:00 AM ET every weekday
-0 6 * * 1-5 cd /home/user/code/turbulence && source .venv/bin/activate && python -m turbulence.cli fetch-data && python -m turbulence.cli compute --indicators tier1
+0 6 * * 1-5 cd /home/user/code/turbulence && source .venv/bin/activate && turbulence fetch-data && turbulence compute
 
 # Email results (requires mail setup)
-5 6 * * 1-5 cd /home/user/code/turbulence && source .venv/bin/activate && python -m turbulence.cli status --detailed | mail -s "Turbulence Regime $(date +\%Y-\%m-\%d)" your@email.com
+5 6 * * 1-5 cd /home/user/code/turbulence && source .venv/bin/activate && turbulence status --detailed | mail -s "Turbulence Regime $(date +\%Y-\%m-\%d)" your@email.com
 ```
 
 **Shell Script for Quick Check:**
@@ -562,16 +560,16 @@ cd /home/user/code/turbulence
 source .venv/bin/activate
 
 echo "Fetching latest data..."
-python -m turbulence.cli fetch-data > /dev/null 2>&1
+turbulence fetch-data > /dev/null 2>&1
 
 echo "Computing indicators..."
-python -m turbulence.cli compute --indicators tier1 > /dev/null 2>&1
+turbulence compute > /dev/null 2>&1
 
 echo ""
 echo "===================================="
 echo "  TURBULENCE REGIME - $(date +%Y-%m-%d)"
 echo "===================================="
-python -m turbulence.cli status --detailed
+turbulence status --detailed
 
 # Make executable: chmod +x ~/trading/turbulence-check.sh
 # Run: ~/trading/turbulence-check.sh
@@ -634,31 +632,20 @@ python -m turbulence.cli compute --retrain --indicators all
 # Use walk-forward backtest to verify performance
 ```
 
-## Database Schema
+## Data Storage
 
-### Your Existing Tables (Not Modified)
+All data is stored as **parquet files** in `~/.turbulence/data/` (configurable via `TURBULENCE_DATA_DIR` env var). Parquet provides fast columnar reads with no database setup required.
 
-- **stock_prices** - OHLCV data for all tickers (ticker, date, open, high, low, close, volume)
+### Directory Structure
 
-### New Turbulence Tables
-
-**turbulence_volatility_metrics**
-```sql
-ticker, date, garman_klass_vol, parkinson_vol, rogers_satchell_vol,
-yang_zhang_vol, close_to_close_vol, vol_percentile
 ```
-
-**turbulence_regime_classifications**
-```sql
-date, vix_level, vix3m_level, vix_term_structure_ratio, vix_regime,
-realized_vol_percentile, garch_conditional_vol, turbulence_index,
-hmm_state, hmm_prob_low, hmm_prob_normal, hmm_prob_high, absorption_ratio
-```
-
-**turbulence_composite_scores**
-```sql
-date, vix_component, vix_term_component, realized_vol_component,
-turbulence_component, garch_component, composite_score, regime_label
+~/.turbulence/data/
+  prices/                         # OHLCV data per ticker
+    SPY.parquet                   # ticker, date, open, high, low, close, volume
+    TLT.parquet
+    ...
+  composite_scores.parquet        # date, composite_score, regime_label, components
+  regime_classifications.parquet  # date, vix_level, vix3m_level, vix_regime, etc.
 ```
 
 ## Configuration
@@ -669,11 +656,12 @@ turbulence_component, garch_component, composite_score, regime_label
 # Optional: custom data directory (default: ~/.turbulence/data)
 TURBULENCE_DATA_DIR=/path/to/data
 
-# Optional: FRED API (for credit spreads, yield curve)
-FRED_API_KEY=your_fred_api_key
-
 # Optional: logging
 LOG_LEVEL=INFO
+
+# Optional: API rate limiting
+API_RATE_LIMIT_DELAY=0.2
+API_MAX_RETRIES=3
 ```
 
 ### Default Tickers
@@ -710,8 +698,8 @@ python -m turbulence.cli compute
 # Activate virtual environment
 source .venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install in development mode
+pip install -e .
 ```
 
 ### Data fetching fails
@@ -746,7 +734,6 @@ Check that:
 For issues or questions:
 - Check `CLAUDE.md` for detailed architectural documentation
 - Review `TURBULENCE.md` for academic/theoretical background
-- Inspect `DATABASE_README.md` for database layer details
-- Check logs in `~/.turbulence/logs/` (if configured)
+- Run `turbulence COMMAND --help` for any subcommand
 
 **Remember:** This system is a decision support tool, not a black box. Always validate regime classifications against current market conditions and use human judgment before adjusting positions.

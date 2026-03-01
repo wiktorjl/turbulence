@@ -44,22 +44,18 @@ python -m turbulence.cli compute
 python -m turbulence.cli compute --retrain
 ```
 
-## Database Tables
+## Data Storage
 
-**Your existing table (unchanged):**
-- `stock_prices` - OHLCV data for all tickers
-
-**New turbulence tables (3 total):**
-- `turbulence_volatility_metrics` - Garman-Klass, Parkinson vol
-- `turbulence_regime_classifications` - VIX regimes, HMM states
-- `turbulence_composite_scores` - Final turbulence score (0-1)
+All data stored as **parquet files** in `~/.turbulence/data/` (configurable via `TURBULENCE_DATA_DIR` env var):
+- `prices/` — OHLCV price data per ticker
+- `composite_scores.parquet` — Final turbulence score (0-1)
+- `regime_classifications.parquet` — VIX regimes, HMM states
 
 ## Key Files
 
 - **[USAGE.md](USAGE.md)** ← **START HERE** - Complete guide
-- **[CHANGES_COMPLETE.md](CHANGES_COMPLETE.md)** - What was changed
-- [CLAUDE.md](CLAUDE.md) - Technical architecture
-- [README.md](README.md) - CLI reference
+- [CLAUDE.md](../CLAUDE.md) - Technical architecture
+- [TURBULENCE.md](TURBULENCE.md) - Design document
 
 ## Need Help?
 
