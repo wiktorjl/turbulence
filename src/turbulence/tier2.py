@@ -7,6 +7,7 @@ This module implements advanced statistical models for detecting market regimes:
 3. Hamilton regime-switching model with variance switching
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from hmmlearn import hmm
@@ -14,6 +15,8 @@ from arch import arch_model
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from typing import Tuple, Optional
 import warnings
+
+logger = logging.getLogger(__name__)
 
 
 def fit_gaussian_hmm(
@@ -69,12 +72,13 @@ def fit_gaussian_hmm(
         warnings.filterwarnings('ignore')
         model.fit(X)
 
-    # Sort states by covariance determinant (volatility)
-    # Lower covariance = low volatility state
+    # Sort states by covariance determinant so state 0 = lowest volatility.
+    # HMM states are unordered by default; sorting by det(Sigma) gives a
+    # consistent labeling where higher state index = higher volatility regime.
     covs = [np.linalg.det(model.covars_[i]) for i in range(n_states)]
     state_order = np.argsort(covs)
 
-    # Reorder parameters
+    # Reorder all model parameters to match the sorted state labeling
     model.means_ = model.means_[state_order]
     model.covars_ = model.covars_[state_order]
     model.startprob_ = model.startprob_[state_order]
@@ -257,9 +261,8 @@ def rolling_hmm_probabilities(
                 )
                 # Take the last row (current probability estimate)
                 result.iloc[i] = probs.iloc[-1].values
-            except Exception:
-                # If fitting fails, leave as NaN
-                pass
+            except Exception as e:
+                logger.warning(f"HMM fitting failed at index {i}: {e}")
 
     return result
 
@@ -302,9 +305,8 @@ def rolling_garch_volatility(
                 _, cond_vol = fit_gjr_garch(window_data)
                 # Take the last value (current volatility estimate)
                 result.iloc[i] = cond_vol.iloc[-1]
-            except Exception:
-                # If fitting fails, leave as NaN
-                pass
+            except Exception as e:
+                logger.warning(f"GARCH fitting failed at index {i}: {e}")
 
     return result
 
@@ -361,8 +363,7 @@ def rolling_regime_probabilities(
                     probs[f'regime_{j}_filtered'].iloc[-1]
                     for j in range(k_regimes)
                 ]
-            except Exception:
-                # If fitting fails, leave as NaN
-                pass
+            except Exception as e:
+                logger.warning(f"Hamilton regime-switching failed at index {i}: {e}")
 
     return result

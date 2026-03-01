@@ -84,8 +84,9 @@ class KritzmanLiTurbulence:
             try:
                 lw = LedoitWolf()
                 cov_matrix = lw.fit(window_returns.values).covariance_
-            except:
+            except Exception:
                 # Fallback to sample covariance with small regularization
+                logger.warning(f"Ledoit-Wolf failed at index {i}, falling back to sample covariance")
                 cov_matrix = window_returns.cov().values
                 cov_matrix += np.eye(n_assets) * 1e-6
 
@@ -474,7 +475,11 @@ def calculate_tier3_indicators(
     last_fit_idx = -1
     fits_completed = 0
 
-    # For each date, train on expanding window of data available up to that date
+    # Expanding-window refit strategy:
+    # For each date i, we train the GMM on all data from the start up to date i
+    # (expanding window). This avoids look-ahead bias since only past data is used.
+    # To balance accuracy vs speed, we refit the model every `clustering_refit_days`
+    # days and reuse the last fitted model for intermediate dates.
     for i in range(len(returns)):
         if i < clustering_train_window:
             # Not enough data for initial training

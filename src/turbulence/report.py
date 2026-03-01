@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from turbulence.config import get_logger
+from turbulence.composite import DEFAULT_WEIGHTS
 from turbulence import storage
 
 logger = get_logger(__name__)
@@ -189,6 +190,9 @@ def _generate_composite_chart(dates, scores, regimes) -> Optional[str]:
     ax.set_title('Turbulence Composite Score')
     plt.tight_layout()
 
+    # Render chart to an in-memory PNG buffer and return as base64 string.
+    # This allows embedding the chart directly in the HTML via a data: URI,
+    # making the report fully self-contained (no external image files).
     buf = io.BytesIO()
     fig.savefig(buf, format='png', dpi=120, bbox_inches='tight')
     plt.close(fig)
@@ -368,13 +372,19 @@ def generate_report(
     # Component Scores
     html_parts.append("<h2>Component Scores (Latest)</h2>")
     html_parts.append("<table><tr><th>Component</th><th>Score</th><th>Weight</th></tr>")
-    weights = {'vix_component': 0.25, 'realized_vol_component': 0.20, 'turbulence_component': 0.25,
-               'garch_component': 0.15, 'vix_term_component': 0.15}
+    # Map report column names to the composite weight keys from composite.py
+    col_to_weight_key = {
+        'vix_component': 'vix_percentile',
+        'realized_vol_component': 'realized_vol_percentile',
+        'turbulence_component': 'turbulence_percentile',
+        'garch_component': 'garch_vol_percentile',
+        'vix_term_component': 'vix_term_structure',
+    }
     for col in component_cols:
         val = latest.get(col, None)
         val_str = f"{val:.3f}" if val is not None and not pd.isna(val) else "N/A"
         name = component_names.get(col, col)
-        weight = weights.get(col, 0)
+        weight = DEFAULT_WEIGHTS.get(col_to_weight_key.get(col, ''), 0)
         html_parts.append(f"<tr><td>{name}</td><td>{val_str}</td><td>{weight:.0%}</td></tr>")
     html_parts.append("</table>")
 
