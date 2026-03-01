@@ -174,7 +174,7 @@ For the Hamilton regime-switching model, `statsmodels` (already in most Python e
 
 ## Data stack costs nothing to start
 
-The entire Tier 1–3 system can be built on **free data**. Use `yfinance` for cross-asset daily returns (SPY, TLT, GLD, UUP, HYG, EFA, EEM, VNQ), VIX (`^VIX`), VIX3M (`^VIX3M`), and basic ES futures (`ES=F`). Use `fredapi` with a free API key for credit spreads (`BAMLH0A0HYM2`), yield curve slope (`T10Y2Y`), and treasury rates (`DGS10`, `DGS2`). For intraday ES data, **Alpaca** provides free 1-minute bars with a paper trading account (10+ years history, 200 requests/minute). For production-quality futures tick data, **Databento** and **FirstRate Data** are the best mid-cost options. For options implied volatility, `yfinance` provides option chains with IV per contract for prototyping; **Polygon.io** ($29–79/month) or **IBKR's TWS API** provides production-grade IV data.
+The entire Tier 1–3 system can be built on **free data**. This project uses `yfinance` for all data: cross-asset daily returns (SPY, TLT, GLD, UUP, HYG), VIX (`^VIX`), VIX3M (`^VIX3M`), and basic ES futures (`ES=F`). All data is stored locally as parquet files — no database required. For additional data sources, `fredapi` with a free API key provides credit spreads (`BAMLH0A0HYM2`), yield curve slope (`T10Y2Y`), and treasury rates (`DGS10`, `DGS2`). For intraday ES data, **Alpaca** provides free 1-minute bars with a paper trading account. For production-quality futures tick data, **Databento** and **FirstRate Data** are mid-cost options. For options implied volatility, `yfinance` provides option chains with IV per contract for prototyping; **IBKR's TWS API** provides production-grade IV data.
 
 ## The academic foundation in five papers
 
