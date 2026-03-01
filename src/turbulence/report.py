@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from turbulence.config import get_logger
+from turbulence import storage
 
 logger = get_logger(__name__)
 
@@ -196,7 +197,6 @@ def _generate_composite_chart(dates, scores, regimes) -> Optional[str]:
 
 
 def generate_report(
-    db,
     start_date: datetime,
     end_date: datetime,
     output_path: str,
@@ -208,8 +208,6 @@ def generate_report(
 
     Parameters
     ----------
-    db : DatabaseManager
-        Database connection manager.
     start_date : datetime
         Report period start.
     end_date : datetime
@@ -242,24 +240,12 @@ def generate_report(
 
     logger.info(f"Generating {format.upper()} report for {start_date.date()} to {end_date.date()}")
 
-    # Query composite scores
-    with db.get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT date, composite_score, regime_label,
-                       vix_component, realized_vol_component, turbulence_component,
-                       garch_component, vix_term_component
-                FROM turbulence_composite_scores
-                WHERE date >= %s AND date <= %s
-                ORDER BY date
-            """, (start_date.date(), end_date.date()))
-            rows = cur.fetchall()
-            columns = [desc[0] for desc in cur.description]
+    # Load composite scores from parquet
+    df = storage.load_composite_scores(start_date, end_date)
 
-    if not rows:
+    if df.empty:
         raise ValueError(f"No composite score data found between {start_date.date()} and {end_date.date()}")
 
-    df = pd.DataFrame(rows, columns=columns)
     df['date'] = pd.to_datetime(df['date'])
     df = df.set_index('date')
 

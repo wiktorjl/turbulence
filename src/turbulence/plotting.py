@@ -5,56 +5,24 @@ Generates matplotlib charts showing composite turbulence scores
 over time with color-coded regime background zones.
 """
 
-import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Patch
 import pandas as pd
-import psycopg2
-from dotenv import load_dotenv
 
-load_dotenv()
+from turbulence import storage
 
 
 def fetch_turbulence_data(start_date=None, end_date=None):
-    """Fetch turbulence scores from database."""
-    DATABASE_URL = os.getenv('DATABASE_URL')
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL not found in environment")
+    """Fetch turbulence scores from parquet storage."""
+    df = storage.load_composite_scores(start_date, end_date)
 
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
-
-    query = """
-        SELECT date, composite_score, regime_label
-        FROM turbulence_composite_scores
-        WHERE 1=1
-    """
-    params = []
-
-    if start_date:
-        query += " AND date >= %s"
-        params.append(start_date)
-
-    if end_date:
-        query += " AND date <= %s"
-        params.append(end_date)
-
-    query += " ORDER BY date"
-
-    cur.execute(query, params)
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    if not rows:
+    if df.empty:
         raise ValueError("No data found for specified date range")
 
-    df = pd.DataFrame(rows, columns=['date', 'composite_score', 'regime_label'])
     df['date'] = pd.to_datetime(df['date'])
     df['composite_score'] = df['composite_score'].astype(float)
 

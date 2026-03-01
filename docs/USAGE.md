@@ -45,7 +45,7 @@ python -m turbulence.cli fetch-data --start-date 2020-01-01 --end-date 2024-12-3
 python -m turbulence.cli fetch-data --tickers SPY,QQQ,^VIX
 ```
 
-Data is fetched from Polygon.io (if API key is in `.env`), falling back to yfinance.
+Data is fetched from Yahoo Finance and stored as parquet files in `~/.turbulence/data/`.
 
 ### 3. Compute Turbulence Indicators
 
@@ -666,14 +666,14 @@ turbulence_component, garch_component, composite_score, regime_label
 ### Environment Variables (.env)
 
 ```bash
-# Required: PostgreSQL connection
-DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
-
-# Optional: Polygon.io API (falls back to yfinance)
-POLYGON_API_KEY=your_api_key_here
+# Optional: custom data directory (default: ~/.turbulence/data)
+TURBULENCE_DATA_DIR=/path/to/data
 
 # Optional: FRED API (for credit spreads, yield curve)
 FRED_API_KEY=your_fred_api_key
+
+# Optional: logging
+LOG_LEVEL=INFO
 ```
 
 ### Default Tickers
@@ -690,7 +690,7 @@ The system fetches these tickers by default (required for turbulence index):
 
 ## Troubleshooting
 
-### "No price data found in database"
+### "No price data found"
 
 ```bash
 # Fetch data first
@@ -716,10 +716,9 @@ pip install -r requirements.txt
 
 ### Data fetching fails
 
-Check your `.env` file:
-- POLYGON_API_KEY is set (or use yfinance fallback)
-- DATABASE_URL is correct
-- Database is running (`pg_isready -h localhost`)
+Check that:
+- yfinance can reach Yahoo Finance servers
+- Data directory exists (`turbulence init`)
 
 ## Academic References
 

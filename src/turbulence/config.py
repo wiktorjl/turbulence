@@ -31,43 +31,13 @@ class Config:
             if env_path.exists():
                 load_dotenv(env_path)
 
-        self._validate_config()
-
-    def _validate_config(self) -> None:
-        """Validate that required configuration is present."""
-        missing = []
-
-        if not self.database_url:
-            missing.append('DATABASE_URL')
-
-        if not self.polygon_api_key:
-            missing.append('POLYGON_API_KEY')
-
-        if missing:
-            raise ConfigurationError(
-                f"Missing required configuration: {', '.join(missing)}. "
-                f"Please set these in your .env file or environment variables."
-            )
-
     @property
-    def database_url(self) -> str:
-        """PostgreSQL database connection URL."""
-        return os.getenv('DATABASE_URL', '')
-
-    @property
-    def polygon_api_key(self) -> str:
-        """Polygon.io API key."""
-        return os.getenv('POLYGON_API_KEY', '')
-
-    @property
-    def polygon_s3_access_key(self) -> Optional[str]:
-        """Polygon.io S3 access key (optional)."""
-        return os.getenv('POLYGON_S3_ACCESS_KEY')
-
-    @property
-    def polygon_s3_secret_key(self) -> Optional[str]:
-        """Polygon.io S3 secret key (optional)."""
-        return os.getenv('POLYGON_S3_SECRET_KEY')
+    def data_dir(self) -> Path:
+        """Data directory for parquet storage."""
+        d = os.getenv('TURBULENCE_DATA_DIR')
+        if d:
+            return Path(d)
+        return Path.home() / '.turbulence' / 'data'
 
     @property
     def log_level(self) -> str:
@@ -81,16 +51,6 @@ class Config:
             'LOG_FORMAT',
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
-
-    @property
-    def db_pool_min(self) -> int:
-        """Minimum database connection pool size."""
-        return int(os.getenv('DB_POOL_MIN', '1'))
-
-    @property
-    def db_pool_max(self) -> int:
-        """Maximum database connection pool size."""
-        return int(os.getenv('DB_POOL_MAX', '10'))
 
     @property
     def api_rate_limit_delay(self) -> float:
@@ -117,9 +77,6 @@ def get_config() -> Config:
 
     Returns:
         Global Config instance
-
-    Raises:
-        ConfigurationError: If required configuration is missing
     """
     global _config_instance
     if _config_instance is None:
@@ -148,7 +105,6 @@ def setup_logging(config: Optional[Config] = None) -> None:
     )
 
     logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('psycopg2').setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:

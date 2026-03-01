@@ -13,7 +13,7 @@ from typing import Optional
 import click
 
 from turbulence import __version__
-from turbulence.database import get_db_manager
+from turbulence import storage
 
 
 @click.group()
@@ -30,6 +30,30 @@ def main(ctx):
     Use --help with any command for detailed usage information.
     """
     ctx.ensure_object(dict)
+
+
+@main.command()
+def init():
+    """
+    Initialize the data directory.
+
+    Creates the directory structure for storing price data and computed results
+    as parquet files. Safe to run multiple times.
+
+    Examples:
+
+        turbulence init
+    """
+    try:
+        storage.init_data_dir()
+        data_dir = storage.get_data_dir()
+        click.echo(f"Data directory initialized at {data_dir}")
+        click.echo("\nDirectory structure:")
+        click.echo(f"  {data_dir}/prices/     (OHLCV price data)")
+        click.echo(f"  {data_dir}/            (computed results)")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
 
 
 @main.command()
@@ -51,16 +75,11 @@ def main(ctx):
     default='SPY,TLT,GLD,UUP,HYG,^VIX,^VIX3M',
     help='Comma-separated list of tickers to fetch. Default: SPY,TLT,GLD,UUP,HYG,^VIX,^VIX3M'
 )
-@click.option(
-    '--init-db',
-    is_flag=True,
-    help='Initialize database schema before fetching data.'
-)
-def fetch_data(start_date, end_date, tickers, init_db):
+def fetch_data(start_date, end_date, tickers):
     """
     Fetch historical market data for specified date range and tickers.
 
-    Downloads OHLCV data from Yahoo Finance and stores it in the database.
+    Downloads OHLCV data from Yahoo Finance and stores it as parquet files.
     Includes support for VIX indices and cross-asset data required for
     turbulence index calculation.
 
@@ -72,8 +91,8 @@ def fetch_data(start_date, end_date, tickers, init_db):
         # Fetch specific tickers for custom date range
         turbulence fetch-data --start-date 2020-01-01 --end-date 2023-12-31 --tickers SPY,VIX
 
-        # Initialize database and fetch data
-        turbulence fetch-data --init-db
+        # Initialize data dir and fetch data
+        turbulence init && turbulence fetch-data
     """
     try:
         # Set default dates if not provided
@@ -87,35 +106,27 @@ def fetch_data(start_date, end_date, tickers, init_db):
         click.echo(f"Fetching data from {start_date.date()} to {end_date.date()}")
         click.echo(f"Tickers: {', '.join(ticker_list)}")
 
-        db = get_db_manager()
+        # Ensure data directory exists
+        storage.init_data_dir()
 
-        if init_db:
-            click.echo("Initializing database schema...")
-            db.create_schema()
-            click.echo("Database initialized successfully.")
-
-        # Fetch and store data
         from turbulence.data_fetcher import get_data_fetcher
 
         fetcher = get_data_fetcher()
 
-        with db.get_connection() as conn:
-            result = fetcher.fetch_and_store(
-                conn,
-                ticker_list,
+        total_rows = 0
+        for ticker in ticker_list:
+            rows = fetcher.fetch_and_store(
+                ticker,
                 start_date.strftime('%Y-%m-%d'),
-                end_date.strftime('%Y-%m-%d')
+                end_date.strftime('%Y-%m-%d'),
             )
+            if rows > 0:
+                click.echo(f"  {ticker}: {rows} rows")
+                total_rows += rows
+            else:
+                click.echo(f"  {ticker}: no data fetched", err=True)
 
-        if result['status'] == 'success':
-            click.echo(f"✓ Successfully fetched {result['tickers']} tickers")
-            click.echo(f"  Total rows: {result['total_rows']}")
-            click.echo(f"  Inserted: {result['inserted']}, Updated: {result['updated']}")
-            click.echo(f"  Date range: {result['date_range']}")
-        else:
-            click.echo(f"✗ Error: {result.get('message', 'Unknown error')}", err=True)
-
-        db.close()
+        click.echo(f"\nTotal rows stored: {total_rows}")
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -148,7 +159,7 @@ def fetch_data(start_date, end_date, tickers, init_db):
 )
 def compute(start_date, end_date, indicators, retrain):
     """
-    Calculate all turbulence indicators and store results in database.
+    Calculate all turbulence indicators and store results.
 
     Computes indicators across three tiers:
     - Tier 1: VIX regime, Garman-Klass volatility, volatility percentiles
@@ -181,8 +192,6 @@ def compute(start_date, end_date, indicators, retrain):
         if retrain:
             click.echo("Retraining statistical models...")
 
-        db = get_db_manager()
-
         import pandas as pd
         import numpy as np
         from turbulence.tier1 import calculate_tier1_indicators
@@ -190,31 +199,18 @@ def compute(start_date, end_date, indicators, retrain):
         from turbulence.tier3 import calculate_tier3_indicators
         from turbulence.composite import CompositeScorer
 
-        # Fetch price data from database
-        with db.get_connection() as conn:
-            with conn.cursor() as cur:
-                query = """
-                    SELECT ticker, date, open, high, low, close, volume
-                    FROM stock_prices
-                    WHERE ticker IN ('SPY', 'TLT', 'GLD', 'UUP', 'HYG', '^VIX', '^VIX3M')
-                    ORDER BY ticker, date
-                """
-                cur.execute(query)
-                rows = cur.fetchall()
+        # Fetch price data from parquet storage
+        tickers = ['SPY', 'TLT', 'GLD', 'UUP', 'HYG', '^VIX', '^VIX3M']
+        df = storage.load_all_prices(tickers, start_date, end_date)
 
-        if not rows:
-            click.echo("✗ No price data found in database. Run 'fetch-data' first.", err=True)
+        if df.empty:
+            click.echo("No price data found. Run 'fetch-data' first.", err=True)
             sys.exit(1)
-
-        # Convert to DataFrame and ensure numeric types
-        df = pd.DataFrame(rows, columns=['ticker', 'date', 'open', 'high', 'low', 'close', 'volume'])
-        for col in ['open', 'high', 'low', 'close']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # Pivot to get SPY data for main calculations
         spy_data = df[df['ticker'] == 'SPY'].copy()
         if spy_data.empty:
-            click.echo("✗ No SPY data found. Cannot compute indicators.", err=True)
+            click.echo("No SPY data found. Cannot compute indicators.", err=True)
             sys.exit(1)
 
         spy_data = spy_data.sort_values('date').reset_index(drop=True)
@@ -244,20 +240,20 @@ def compute(start_date, end_date, indicators, retrain):
                 vix_col='vix',
                 vix3m_col='vix3m' if 'vix3m' in spy_data.columns else None
             )
-            click.echo("  ✓ Tier 1 complete")
+            click.echo("  Tier 1 complete")
 
         if indicators in ['tier2', 'all']:
             click.echo("Computing Tier 2 models...")
             returns = np.log(spy_data['close'] / spy_data['close'].shift(1))
             spy_data['garch_vol'] = rolling_garch_volatility(returns, window=252, min_periods=100)
-            click.echo("  ✓ Tier 2 complete (GARCH)")
+            click.echo("  Tier 2 complete (GARCH)")
 
         if indicators in ['tier3', 'all']:
             click.echo("Computing Tier 3 turbulence...")
             # Build multi-asset returns matrix
-            tickers = ['SPY', 'TLT', 'GLD', 'UUP', 'HYG']
+            asset_tickers = ['SPY', 'TLT', 'GLD', 'UUP', 'HYG']
             returns_data = []
-            for ticker in tickers:
+            for ticker in asset_tickers:
                 ticker_df = df[df['ticker'] == ticker].copy().sort_values('date')
                 if not ticker_df.empty:
                     ticker_df['returns'] = ticker_df['close'].pct_change()
@@ -279,7 +275,7 @@ def compute(start_date, end_date, indicators, retrain):
                     on='date',
                     how='left'
                 )
-                click.echo("  ✓ Tier 3 complete")
+                click.echo("  Tier 3 complete")
 
         if indicators == 'all':
             click.echo("Computing composite turbulence scores...")
@@ -301,64 +297,49 @@ def compute(start_date, end_date, indicators, retrain):
                 for col in components_df.columns:
                     spy_data[col] = components_df[col]
                 spy_data = spy_data.reset_index()
-                click.echo("  ✓ Composite scoring complete")
+                click.echo("  Composite scoring complete")
 
-        # Store results to database
-        click.echo("\nStoring results to database...")
-        with db.get_connection() as conn:
-            with conn.cursor() as cur:
-                stored_count = 0
-                for _, row in spy_data.iterrows():
-                    # Store regime classifications
-                    if 'vix' in row and pd.notna(row['vix']):
-                        cur.execute("""
-                            INSERT INTO turbulence_regime_classifications
-                            (date, vix_level, vix3m_level, vix_term_structure_ratio, vix_regime)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (date) DO UPDATE SET
-                                vix_level = EXCLUDED.vix_level,
-                                vix3m_level = EXCLUDED.vix3m_level,
-                                vix_term_structure_ratio = EXCLUDED.vix_term_structure_ratio,
-                                vix_regime = EXCLUDED.vix_regime
-                        """, (
-                            row['date'],
-                            float(row['vix']) if pd.notna(row['vix']) else None,
-                            float(row.get('vix3m')) if 'vix3m' in row and pd.notna(row.get('vix3m')) else None,
-                            float(row.get('vix_term_structure_ratio')) if 'vix_term_structure_ratio' in row and pd.notna(row.get('vix_term_structure_ratio')) else None,
-                            str(row.get('vix_regime')) if 'vix_regime' in row and pd.notna(row.get('vix_regime')) else None
-                        ))
+        # Store results to parquet
+        click.echo("\nStoring results...")
 
-                    # Store composite scores if available
-                    if 'composite_score' in row and pd.notna(row.get('composite_score')):
-                        cur.execute("""
-                            INSERT INTO turbulence_composite_scores
-                            (date, composite_score, regime_label,
-                             vix_component, vix_term_component, realized_vol_component,
-                             turbulence_component, garch_component)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (date) DO UPDATE SET
-                                composite_score = EXCLUDED.composite_score,
-                                regime_label = EXCLUDED.regime_label,
-                                vix_component = EXCLUDED.vix_component,
-                                vix_term_component = EXCLUDED.vix_term_component,
-                                realized_vol_component = EXCLUDED.realized_vol_component,
-                                turbulence_component = EXCLUDED.turbulence_component,
-                                garch_component = EXCLUDED.garch_component
-                        """, (
-                            row['date'],
-                            float(row['composite_score']),
-                            str(row.get('regime')),
-                            float(row.get('vix_percentile')) if 'vix_percentile' in row and pd.notna(row.get('vix_percentile')) else None,
-                            float(row.get('vix_term_structure')) if 'vix_term_structure' in row and pd.notna(row.get('vix_term_structure')) else None,
-                            float(row.get('realized_vol_percentile')) if 'realized_vol_percentile' in row and pd.notna(row.get('realized_vol_percentile')) else None,
-                            float(row.get('turbulence_percentile')) if 'turbulence_percentile' in row and pd.notna(row.get('turbulence_percentile')) else None,
-                            float(row.get('garch_vol_percentile')) if 'garch_vol_percentile' in row and pd.notna(row.get('garch_vol_percentile')) else None
-                        ))
-                        stored_count += 1
+        # Build regime classifications DataFrame
+        regime_rows = []
+        for _, row in spy_data.iterrows():
+            if 'vix' in row and pd.notna(row['vix']):
+                regime_rows.append({
+                    'date': row['date'],
+                    'vix_level': float(row['vix']) if pd.notna(row['vix']) else None,
+                    'vix3m_level': float(row.get('vix3m')) if 'vix3m' in row and pd.notna(row.get('vix3m')) else None,
+                    'vix_term_structure_ratio': float(row.get('vix_term_structure_ratio')) if 'vix_term_structure_ratio' in row and pd.notna(row.get('vix_term_structure_ratio')) else None,
+                    'vix_regime': str(row.get('vix_regime')) if 'vix_regime' in row and pd.notna(row.get('vix_regime')) else None,
+                })
 
-        click.echo(f"  ✓ Stored {stored_count} regime records")
-        click.echo(f"\n✓ Computation complete. Processed {len(spy_data)} days of data.")
-        db.close()
+        if regime_rows:
+            regime_df = pd.DataFrame(regime_rows)
+            storage.save_regime_classifications(regime_df)
+
+        # Build composite scores DataFrame
+        composite_rows = []
+        for _, row in spy_data.iterrows():
+            if 'composite_score' in row and pd.notna(row.get('composite_score')):
+                composite_rows.append({
+                    'date': row['date'],
+                    'composite_score': float(row['composite_score']),
+                    'regime_label': str(row.get('regime')),
+                    'vix_component': float(row.get('vix_percentile')) if 'vix_percentile' in row and pd.notna(row.get('vix_percentile')) else None,
+                    'vix_term_component': float(row.get('vix_term_structure')) if 'vix_term_structure' in row and pd.notna(row.get('vix_term_structure')) else None,
+                    'realized_vol_component': float(row.get('realized_vol_percentile')) if 'realized_vol_percentile' in row and pd.notna(row.get('realized_vol_percentile')) else None,
+                    'turbulence_component': float(row.get('turbulence_percentile')) if 'turbulence_percentile' in row and pd.notna(row.get('turbulence_percentile')) else None,
+                    'garch_component': float(row.get('garch_vol_percentile')) if 'garch_vol_percentile' in row and pd.notna(row.get('garch_vol_percentile')) else None,
+                })
+
+        stored_count = len(composite_rows)
+        if composite_rows:
+            composite_df = pd.DataFrame(composite_rows)
+            storage.save_composite_scores(composite_df)
+
+        click.echo(f"  Stored {stored_count} regime records")
+        click.echo(f"\nComputation complete. Processed {len(spy_data)} days of data.")
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -403,6 +384,9 @@ def status(date, format, detailed):
         turbulence status --format json
     """
     try:
+        import pandas as pd
+        import json
+
         if date is None:
             date_str = "latest available"
         else:
@@ -411,65 +395,46 @@ def status(date, format, detailed):
         click.echo(f"Market Regime Status as of {date_str}")
         click.echo("=" * 60)
 
-        db = get_db_manager()
+        # Load composite scores
+        composite_df = storage.load_composite_scores()
+        regime_df = storage.load_regime_classifications()
 
-        import pandas as pd
-        import json
+        composite_row = None
+        regime_row = None
 
-        # Query regime data from database (for specific date or latest)
-        with db.get_connection() as conn:
-            with conn.cursor() as cur:
-                if date is not None:
-                    # Query for specific date
-                    date_filter = date.date()
-
-                    cur.execute("""
-                        SELECT date, composite_score, regime_label,
-                               vix_component, vix_term_component, realized_vol_component,
-                               turbulence_component, garch_component
-                        FROM turbulence_composite_scores
-                        WHERE date = %s
-                    """, (date_filter,))
-                    composite_row = cur.fetchone()
-
-                    cur.execute("""
-                        SELECT date, vix_level, vix_regime, vix_term_structure_ratio
-                        FROM turbulence_regime_classifications
-                        WHERE date = %s
-                    """, (date_filter,))
-                    regime_row = cur.fetchone()
-                else:
-                    # Query latest available
-                    cur.execute("""
-                        SELECT date, composite_score, regime_label,
-                               vix_component, vix_term_component, realized_vol_component,
-                               turbulence_component, garch_component
-                        FROM turbulence_composite_scores
-                        ORDER BY date DESC
-                        LIMIT 1
-                    """)
-                    composite_row = cur.fetchone()
-
-                    cur.execute("""
-                        SELECT date, vix_level, vix_regime, vix_term_structure_ratio
-                        FROM turbulence_regime_classifications
-                        ORDER BY date DESC
-                        LIMIT 1
-                    """)
-                    regime_row = cur.fetchone()
-
-        if not composite_row and not regime_row:
+        if not composite_df.empty:
+            composite_df['date'] = pd.to_datetime(composite_df['date'])
             if date is not None:
-                click.echo(f"✗ No regime data found for {date_str}.", err=True)
+                mask = composite_df['date'].dt.date == date.date()
+                matched = composite_df[mask]
+                if not matched.empty:
+                    composite_row = matched.iloc[-1]
+            else:
+                composite_row = composite_df.iloc[-1]
+
+        if not regime_df.empty:
+            regime_df['date'] = pd.to_datetime(regime_df['date'])
+            if date is not None:
+                mask = regime_df['date'].dt.date == date.date()
+                matched = regime_df[mask]
+                if not matched.empty:
+                    regime_row = matched.iloc[-1]
+            else:
+                regime_row = regime_df.iloc[-1]
+
+        if composite_row is None and regime_row is None:
+            if date is not None:
+                click.echo(f"No regime data found for {date_str}.", err=True)
                 click.echo("Try a different date or run 'compute' to generate data.", err=True)
             else:
-                click.echo("✗ No regime data found. Run 'compute' first.", err=True)
-            db.close()
+                click.echo("No regime data found. Run 'compute' first.", err=True)
             sys.exit(1)
 
         if format == 'table':
-            if composite_row:
-                comp_date, comp_score, regime_label, vix_comp, vix_term_comp, real_vol_comp, turb_comp, garch_comp = composite_row
+            if composite_row is not None:
+                comp_score = composite_row.get('composite_score')
+                regime_label = composite_row.get('regime_label')
+                comp_date = composite_row.get('date')
                 click.echo(f"\nComposite Turbulence Score: {comp_score:.3f}" if comp_score else "\nComposite Turbulence Score: --")
                 click.echo(f"Current Regime: {regime_label.upper()}" if regime_label else "Current Regime: --")
                 click.echo(f"As of: {comp_date}")
@@ -485,36 +450,41 @@ def status(date, format, detailed):
 
             if detailed:
                 click.echo("\nComponent Scores:")
-                if composite_row:
-                    click.echo(f"  VIX Component:              {vix_comp:.3f}" if vix_comp else "  VIX Component:              --")
-                    click.echo(f"  VIX Term Structure:         {vix_term_comp:.3f}" if vix_term_comp else "  VIX Term Structure:         --")
-                    click.echo(f"  Realized Volatility:        {real_vol_comp:.3f}" if real_vol_comp else "  Realized Volatility:        --")
-                    click.echo(f"  Turbulence Index:           {turb_comp:.3f}" if turb_comp else "  Turbulence Index:           --")
-                    click.echo(f"  GARCH Conditional Vol:      {garch_comp:.3f}" if garch_comp else "  GARCH Conditional Vol:      --")
+                if composite_row is not None:
+                    vix_comp = composite_row.get('vix_component')
+                    vix_term_comp = composite_row.get('vix_term_component')
+                    real_vol_comp = composite_row.get('realized_vol_component')
+                    turb_comp = composite_row.get('turbulence_component')
+                    garch_comp = composite_row.get('garch_component')
+                    click.echo(f"  VIX Component:              {vix_comp:.3f}" if vix_comp and pd.notna(vix_comp) else "  VIX Component:              --")
+                    click.echo(f"  VIX Term Structure:         {vix_term_comp:.3f}" if vix_term_comp and pd.notna(vix_term_comp) else "  VIX Term Structure:         --")
+                    click.echo(f"  Realized Volatility:        {real_vol_comp:.3f}" if real_vol_comp and pd.notna(real_vol_comp) else "  Realized Volatility:        --")
+                    click.echo(f"  Turbulence Index:           {turb_comp:.3f}" if turb_comp and pd.notna(turb_comp) else "  Turbulence Index:           --")
+                    click.echo(f"  GARCH Conditional Vol:      {garch_comp:.3f}" if garch_comp and pd.notna(garch_comp) else "  GARCH Conditional Vol:      --")
 
-                if regime_row:
-                    reg_date, vix_level, vix_regime, vix_term_ratio = regime_row
+                if regime_row is not None:
+                    vix_level = regime_row.get('vix_level')
+                    vix_regime = regime_row.get('vix_regime')
+                    vix_term_ratio = regime_row.get('vix_term_structure_ratio')
                     click.echo("\nVIX Data:")
-                    click.echo(f"  VIX Level:                  {vix_level:.2f}" if vix_level else "  VIX Level:                  --")
-                    click.echo(f"  VIX Regime:                 {vix_regime}" if vix_regime else "  VIX Regime:                 --")
-                    click.echo(f"  VIX/VIX3M Ratio:            {vix_term_ratio:.3f}" if vix_term_ratio else "  VIX/VIX3M Ratio:            --")
+                    click.echo(f"  VIX Level:                  {vix_level:.2f}" if vix_level and pd.notna(vix_level) else "  VIX Level:                  --")
+                    click.echo(f"  VIX Regime:                 {vix_regime}" if vix_regime and pd.notna(vix_regime) else "  VIX Regime:                 --")
+                    click.echo(f"  VIX/VIX3M Ratio:            {vix_term_ratio:.3f}" if vix_term_ratio and pd.notna(vix_term_ratio) else "  VIX/VIX3M Ratio:            --")
 
         elif format == 'json':
             result = {
-                "composite_score": float(composite_row[1]) if composite_row and composite_row[1] else None,
-                "regime": composite_row[2] if composite_row else None,
-                "date": str(composite_row[0]) if composite_row else None,
+                "composite_score": float(composite_row['composite_score']) if composite_row is not None and pd.notna(composite_row.get('composite_score')) else None,
+                "regime": composite_row['regime_label'] if composite_row is not None else None,
+                "date": str(composite_row['date']) if composite_row is not None else None,
                 "components": {
-                    "vix": float(composite_row[3]) if composite_row and composite_row[3] else None,
-                    "vix_term": float(composite_row[4]) if composite_row and composite_row[4] else None,
-                    "realized_vol": float(composite_row[5]) if composite_row and composite_row[5] else None,
-                    "turbulence": float(composite_row[6]) if composite_row and composite_row[6] else None,
-                    "garch": float(composite_row[7]) if composite_row and composite_row[7] else None
+                    "vix": float(composite_row['vix_component']) if composite_row is not None and pd.notna(composite_row.get('vix_component')) else None,
+                    "vix_term": float(composite_row['vix_term_component']) if composite_row is not None and pd.notna(composite_row.get('vix_term_component')) else None,
+                    "realized_vol": float(composite_row['realized_vol_component']) if composite_row is not None and pd.notna(composite_row.get('realized_vol_component')) else None,
+                    "turbulence": float(composite_row['turbulence_component']) if composite_row is not None and pd.notna(composite_row.get('turbulence_component')) else None,
+                    "garch": float(composite_row['garch_component']) if composite_row is not None and pd.notna(composite_row.get('garch_component')) else None,
                 }
             }
             click.echo(json.dumps(result, indent=2))
-
-        db.close()
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -566,12 +536,6 @@ def backtest(start_date, end_date, train_window, test_window, step_size, output)
     Trains models on a rolling window, tests on out-of-sample data,
     and steps forward to simulate realistic regime detection.
 
-    The backtest evaluates:
-    - Regime classification accuracy
-    - Regime transition timing
-    - Component indicator stability
-    - Model parameter drift
-
     Examples:
 
         # Run standard 3-year train / 6-month test backtest
@@ -607,31 +571,18 @@ def backtest(start_date, end_date, train_window, test_window, step_size, output)
             click.echo(f"Need at least {train_window + test_window} days of data.", err=True)
             sys.exit(1)
 
-        db = get_db_manager()
-
-        # Fetch price data from database
+        # Load price data from parquet
         import pandas as pd
-        with db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT sp.ticker, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
-                    FROM stock_prices sp
-                    WHERE sp.date >= %s AND sp.date <= %s
-                    ORDER BY sp.date
-                """, (start_date.date(), end_date.date()))
-                rows = cur.fetchall()
 
-        if not rows:
-            click.echo("Error: No price data found in database for the specified period.", err=True)
+        tickers = ['SPY', 'TLT', 'GLD', 'UUP', 'HYG', '^VIX', '^VIX3M']
+        all_prices = storage.load_all_prices(tickers, start_date, end_date)
+
+        if all_prices.empty:
+            click.echo("Error: No price data found for the specified period.", err=True)
             click.echo("Run 'turbulence fetch-data' first.", err=True)
             sys.exit(1)
 
-        columns = ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']
-        all_prices = pd.DataFrame(rows, columns=columns)
         all_prices['date'] = pd.to_datetime(all_prices['date'])
-        # Convert Decimal types from PostgreSQL to float for numpy compatibility
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            all_prices[col] = pd.to_numeric(all_prices[col], errors='coerce')
 
         # Build price_data (SPY OHLCV + VIX columns)
         spy = all_prices[all_prices['ticker'] == 'SPY'].set_index('date').sort_index()
@@ -659,9 +610,6 @@ def backtest(start_date, end_date, train_window, test_window, step_size, output)
         click.echo("Running walk-forward validation...")
 
         from turbulence.backtest import run_walk_forward, summarize_backtest
-
-        def progress_cb(current, total):
-            pass  # Progress shown via click.progressbar below
 
         with click.progressbar(length=num_iterations, label='Progress') as bar:
             iteration_count = [0]
@@ -692,7 +640,6 @@ def backtest(start_date, end_date, train_window, test_window, step_size, output)
                 results.to_csv(output, index=False)
                 click.echo(f"\nResults saved to: {output}")
 
-        db.close()
         click.echo("\nBacktest complete.")
 
     except Exception as e:
@@ -739,7 +686,6 @@ def report(start_date, end_date, output, format, include_charts):
     - Time series of all turbulence indicators
     - Regime transition timeline
     - Component score decomposition
-    - Correlation matrices and PCA analysis
     - Historical regime statistics
     - Trading recommendations based on current regime
 
@@ -768,12 +714,9 @@ def report(start_date, end_date, output, format, include_charts):
         click.echo(f"Include charts: {include_charts}")
         click.echo()
 
-        db = get_db_manager()
-
         from turbulence.report import generate_report
 
         output_path = generate_report(
-            db=db,
             start_date=start_date,
             end_date=end_date,
             output_path=output,
@@ -781,7 +724,6 @@ def report(start_date, end_date, output, format, include_charts):
             include_charts=include_charts,
         )
 
-        db.close()
         click.echo(f"\nReport saved to: {output_path}")
 
     except Exception as e:
@@ -876,40 +818,6 @@ def chart(start_date, end_date, ytd, last_3m, last_6m, output):
         click.echo(f"Found {len(df)} data points")
 
         plot_turbulence_chart(df, output)
-
-    except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
-        sys.exit(1)
-
-
-@main.command()
-def init_db():
-    """
-    Initialize the database schema.
-
-    Creates all required tables for storing price data, volatility metrics,
-    regime classifications, and composite scores. Safe to run multiple times
-    (uses CREATE TABLE IF NOT EXISTS).
-
-    Examples:
-
-        # Initialize database
-        turbulence init-db
-    """
-    try:
-        click.echo("Initializing database schema...")
-
-        db = get_db_manager()
-        db.create_schema()
-
-        click.echo("✓ Database schema created successfully.")
-        click.echo("\nCreated turbulence-specific tables:")
-        click.echo("  - turbulence_volatility_metrics")
-        click.echo("  - turbulence_regime_classifications")
-        click.echo("  - turbulence_composite_scores")
-        click.echo("\nNote: Uses existing stock_prices table for price data.")
-
-        db.close()
 
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)

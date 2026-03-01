@@ -3,7 +3,7 @@
 import os
 import tempfile
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -48,89 +48,71 @@ class TestRegimeCssClass:
 
 
 class TestGenerateReport:
-    def test_generates_html(self):
-        """Test report generation with mock database."""
+    def test_generates_html(self, tmp_path):
+        """Test report generation with mock storage."""
         dates = pd.date_range('2024-01-01', periods=50, freq='B')
         rows = []
         for d in dates:
             score = np.random.uniform(0.2, 0.6)
             regime = 'low' if score < 0.25 else ('normal' if score < 0.5 else 'elevated')
-            rows.append((
-                d.date(), score, regime,
-                score * 0.3, score * 0.2, score * 0.25,
-                score * 0.15, score * 0.1,
-            ))
+            rows.append({
+                'date': d,
+                'composite_score': score,
+                'regime_label': regime,
+                'vix_component': score * 0.3,
+                'realized_vol_component': score * 0.2,
+                'turbulence_component': score * 0.25,
+                'garch_component': score * 0.15,
+                'vix_term_component': score * 0.1,
+            })
 
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = rows
-        mock_cursor.description = [
-            ('date',), ('composite_score',), ('regime_label',),
-            ('vix_component',), ('realized_vol_component',), ('turbulence_component',),
-            ('garch_component',), ('vix_term_component',),
-        ]
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_df = pd.DataFrame(rows)
+        output_path = str(tmp_path / 'report.html')
 
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
+        with patch('turbulence.report.storage') as mock_storage:
+            mock_storage.load_composite_scores.return_value = mock_df
 
-        mock_db = MagicMock()
-        mock_db.get_connection.return_value = mock_conn
-
-        with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as f:
-            output_path = f.name
-
-        try:
             result = generate_report(
-                db=mock_db,
                 start_date=datetime(2024, 1, 1),
                 end_date=datetime(2024, 3, 31),
                 output_path=output_path,
                 format='html',
                 include_charts=False,
             )
-            assert os.path.exists(result)
-            with open(result) as f:
-                html = f.read()
-            assert 'Turbulence Analysis Report' in html
-            assert 'Executive Summary' in html
-            assert 'Regime Timeline' in html
-            assert 'Trading Recommendations' in html
-        finally:
-            os.unlink(output_path)
 
-    def test_pdf_raises(self):
-        mock_db = MagicMock()
-        with pytest.raises(ValueError, match="weasyprint"):
-            generate_report(
-                db=mock_db,
-                start_date=datetime(2024, 1, 1),
-                end_date=datetime(2024, 3, 31),
-                output_path='test.pdf',
-                format='pdf',
-            )
+        assert os.path.exists(result)
+        with open(result) as f:
+            html = f.read()
+        assert 'Turbulence Analysis Report' in html
+        assert 'Executive Summary' in html
+        assert 'Regime Timeline' in html
+        assert 'Trading Recommendations' in html
+
+    def test_pdf_raises_without_weasyprint(self):
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == 'weasyprint':
+                raise ImportError("No module named 'weasyprint'")
+            return real_import(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=mock_import):
+            with pytest.raises(ValueError, match="weasyprint"):
+                generate_report(
+                    start_date=datetime(2024, 1, 1),
+                    end_date=datetime(2024, 3, 31),
+                    output_path='test.pdf',
+                    format='pdf',
+                )
 
     def test_no_data_raises(self):
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = []
-        mock_cursor.description = []
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
+        with patch('turbulence.report.storage') as mock_storage:
+            mock_storage.load_composite_scores.return_value = pd.DataFrame()
 
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-
-        mock_db = MagicMock()
-        mock_db.get_connection.return_value = mock_conn
-
-        with pytest.raises(ValueError, match="No composite score data"):
-            generate_report(
-                db=mock_db,
-                start_date=datetime(2024, 1, 1),
-                end_date=datetime(2024, 3, 31),
-                output_path='test.html',
-            )
+            with pytest.raises(ValueError, match="No composite score data"):
+                generate_report(
+                    start_date=datetime(2024, 1, 1),
+                    end_date=datetime(2024, 3, 31),
+                    output_path='test.html',
+                )
