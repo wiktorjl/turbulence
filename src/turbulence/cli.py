@@ -227,6 +227,74 @@ def chart(start_date, end_date, ytd, last_3m, last_6m, output):
         sys.exit(1)
 
 
+@main.command('upload-db')
+@click.option(
+    '--start-date',
+    type=click.DateTime(formats=['%Y-%m-%d']),
+    default=None,
+    help='Only upload data from this date forward (YYYY-MM-DD).'
+)
+@click.option(
+    '--end-date',
+    type=click.DateTime(formats=['%Y-%m-%d']),
+    default=None,
+    help='Only upload data up to this date (YYYY-MM-DD).'
+)
+@click.option(
+    '--existing',
+    is_flag=True,
+    help='Upload existing parquet data without running compute first.'
+)
+def upload_db(start_date, end_date, existing):
+    """
+    Upload computed results from parquet files to PostgreSQL.
+
+    By default, runs compute first and then uploads the results. Use --existing
+    to skip compute and upload whatever is already in the parquet files.
+
+    Requires DATABASE_URL in .env file.
+
+    Examples:
+
+        # Run compute then upload results
+        turbulence upload-db
+
+        # Upload existing parquet data only
+        turbulence upload-db --existing
+
+        # Upload only recent data
+        turbulence upload-db --existing --start-date 2025-01-01
+    """
+    try:
+        from turbulence.db_upload import upload_all
+
+        if not existing:
+            click.echo("Running compute before upload...")
+            ctx = click.get_current_context()
+            ctx.invoke(compute)
+            click.echo()
+
+        click.echo("Uploading results to PostgreSQL...")
+
+        start = start_date.strftime('%Y-%m-%d') if start_date else None
+        end = end_date.strftime('%Y-%m-%d') if end_date else None
+
+        counts = upload_all(start_date=start, end_date=end)
+
+        for table, count in counts.items():
+            click.echo(f"  {table}: {count} rows")
+
+        total = sum(counts.values())
+        if total == 0:
+            click.echo("\nNo data to upload. Run 'compute' first.", err=True)
+        else:
+            click.echo(f"\nUpload complete: {total} total rows")
+
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+
 # Register subcommands from split modules
 from turbulence.cli_compute import compute, report  # noqa: E402
 from turbulence.cli_analysis import status, backtest  # noqa: E402
