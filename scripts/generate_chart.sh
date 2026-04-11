@@ -85,3 +85,7 @@ curl -s \
   "https://${NTFY_TOPIC}" >> "$LOG_FILE" 2>&1
 
 echo "[${DATE} $(date +%H:%M:%S)] Notification sent to ${NTFY_TOPIC}" >> "$LOG_FILE"
+
+# Upload results to PostgreSQL
+turbulence upload-db --existing >> "$LOG_FILE" 2>&1
+echo "[${DATE} $(date +%H:%M:%S)] Database upload complete" >> "$LOG_FILE"
